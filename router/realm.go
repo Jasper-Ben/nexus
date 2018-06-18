@@ -39,6 +39,12 @@ type RealmConfig struct {
 	// authrole, authmethod, transport.  When false, all session details are
 	// included, except transport.auth.
 	MetaStrict bool `json:"meta_strict"`
+	// When true, the session meta api includes unsafe information,
+	// which can be used to compromise the server or other clients.
+	// Never use this, if you don't know, what you are doing.
+	// This exposes the http.Request to all other clients, which are
+	// connected and subscribed to wamp.session.on_join
+	MetaLoose bool `json:"meta_loose"`
 	// When MetaStrict is true, MetaIncludeSessionDetails specifies session
 	// details to include that are in addition to the standard details
 	// specified by the WAMP specification.  This is a list of the names of
@@ -109,6 +115,7 @@ type realm struct {
 	localAuth  bool
 	localAuthz bool
 
+	metaLoose      bool
 	metaStrict     bool
 	metaIncDetails []string
 
@@ -124,24 +131,24 @@ func newRealm(config *RealmConfig, broker *Broker, dealer *Dealer, logger stdlog
 	}
 
 	r := &realm{
-		broker:      broker,
-		dealer:      dealer,
-		authorizer:  config.Authorizer,
-		clients:     map[wamp.ID]*session{},
-		testaments:  map[wamp.ID]testamentBucket{},
-		clientStop:  make(chan struct{}),
-		actionChan:  make(chan func()),
-		metaIDGen:   new(wamp.IDGen),
-		metaDone:    make(chan struct{}),
-		metaProcMap: make(map[wamp.ID]func(*wamp.Invocation) wamp.Message, 9),
-		log:         logger,
-		debug:       debug,
-		localAuth:   config.RequireLocalAuth,
-		localAuthz:  config.RequireLocalAuthz,
-		metaStrict:  config.MetaStrict,
-
+		broker:           broker,
+		dealer:           dealer,
+		authorizer:       config.Authorizer,
+		clients:          map[wamp.ID]*session{},
+		testaments:       map[wamp.ID]testamentBucket{},
+		clientStop:       make(chan struct{}),
+		actionChan:       make(chan func()),
+		metaIDGen:        new(wamp.IDGen),
+		metaDone:         make(chan struct{}),
+		metaProcMap:      make(map[wamp.ID]func(*wamp.Invocation) wamp.Message, 9),
+		log:              logger,
+		debug:            debug,
+		localAuth:        config.RequireLocalAuth,
+		localAuthz:       config.RequireLocalAuthz,
+		metaStrict:       config.MetaStrict,
 		enableMetaKill:   config.EnableMetaKill,
 		enableMetaModify: config.EnableMetaModify,
+		metaLoose:        config.MetaLoose,
 	}
 
 	if debug {
@@ -1145,6 +1152,12 @@ func (r *realm) cleanSessionDetails(details wamp.Dict) wamp.Dict {
 		}
 	} else {
 		clean = details
+	}
+
+	// If there is metaLoose set, we just return the shaped details, but with transport information.
+
+	if r.metaLoose {
+		return clean
 	}
 
 	// If there is no transport detail, all done.
