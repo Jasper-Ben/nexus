@@ -438,7 +438,7 @@ func (r *realm) handleSession(sess *session) error {
 	r.closeLock.Unlock()
 
 	if r.debug {
-		r.log.Println("Started session", sess)
+		r.log.Println("Started session", sess.ID)
 	}
 	go func() {
 		shutdown, killAll, err := r.handleInboundMessages(sess, r.clientStop)
@@ -447,7 +447,7 @@ func (r *realm) handleSession(sess *session) error {
 				Reason:  wamp.ErrProtocolViolation,
 				Details: wamp.Dict{"error": err.Error()},
 			}
-			r.log.Println("Aborting session", sess, ":", err)
+			r.log.Println("Aborting session", sess.ID, ":", err)
 			sess.TrySend(&abortMsg)
 		}
 		r.onLeave(sess, shutdown, killAll)
@@ -461,7 +461,7 @@ func (r *realm) handleSession(sess *session) error {
 // the router.
 func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (bool, bool, error) {
 	if r.debug {
-		defer r.log.Println("Ended session", sess)
+		defer r.log.Println("Ended session", sess.ID)
 	}
 	killChan := sess.killChan
 	recvChan := sess.Recv()
@@ -476,7 +476,7 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 			}
 		case <-stopChan:
 			if r.debug {
-				r.log.Printf("Stop session %s: system shutdown", sess)
+				r.log.Printf("Stop session %s: system shutdown", sess.ID)
 			}
 			sess.TrySend(&wamp.Goodbye{
 				Reason:  wamp.ErrSystemShutdown,
@@ -486,7 +486,7 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 		case goodbye, open := <-killChan:
 			if !open {
 				if r.debug {
-					r.log.Printf("Stop session %s: system shutdown", sess)
+					r.log.Printf("Stop session %s: system shutdown", sess.ID)
 				}
 				sess.TrySend(&wamp.Goodbye{
 					Reason:  wamp.ErrSystemShutdown,
@@ -495,7 +495,7 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 				return true, false, nil
 			}
 			if r.debug {
-				r.log.Printf("Kill session %s: %s", sess, goodbye.Reason)
+				r.log.Printf("Kill session %s: %s", sess.ID, goodbye.Reason)
 			}
 			var killAll bool
 			if _, ok := goodbye.Details["all"]; ok {
@@ -506,7 +506,7 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 		}
 
 		if r.debug {
-			r.log.Printf("Session %s submitting %s: %+v", sess,
+			r.log.Printf("Session %s submitting %s: %+v", sess.ID,
 				msg.MessageType(), msg)
 		}
 
@@ -514,6 +514,11 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 		if r.authorizer != nil && sess != r.metaSess && !r.authzMessage(sess, msg) {
 			// Not authorized; error response sent; do not process message.
 			continue
+		}
+
+		if r.debug {
+			r.log.Printf("Session %s authz %s ok: %+v", sess.ID,
+				msg.MessageType(), msg)
 		}
 
 		switch msg := msg.(type) {
@@ -539,7 +544,7 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 			// An INVOCATION error is the only type of ERROR message the
 			// router should receive.
 			if msg.Type != wamp.INVOCATION {
-				return false, false, fmt.Errorf("invalid ERROR received: %v", msg)
+				return false, false, fmt.Errorf("invalid ERROR %v received from session: %v", msg, sess.ID)
 			}
 			r.dealer.Error(msg)
 
@@ -550,7 +555,7 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 				Details: wamp.Dict{},
 			})
 			if r.debug {
-				r.log.Println("GOODBYE from session", sess, "reason:",
+				r.log.Println("GOODBYE from session", sess.ID, "reason:",
 					msg.Reason)
 			}
 			return false, false, nil
@@ -613,18 +618,18 @@ func (r *realm) authzMessage(sess *session, msg wamp.Message) bool {
 			// Error trying to authorize.  Include error message.
 			errRsp.Error = wamp.ErrAuthorizationFailed
 			errRsp.Arguments = wamp.List{err.Error()}
-			r.log.Println("Client", sess, "authorization failed:", err)
+			r.log.Println("Client", sess.ID, "authorization failed:", err)
 		} else {
 			// Session not authorized.  The inability to return a message is
 			// intentional, so as not to encourage returning information that
 			// could disclose any clues about authorization to an attacker.
 			errRsp.Error = wamp.ErrNotAuthorized
-			r.log.Println("Client", sess, msg.MessageType(), "not authorized")
+			r.log.Println("Client", sess.ID, msg.MessageType(), "not authorized")
 		}
 		if !skipResponse {
 			err = sess.TrySend(errRsp)
 			if err != nil {
-				r.log.Println("!!! client blocked, could not send authz error")
+				r.log.Println("!!! client", sess.ID, "blocked, could not send authz error")
 			}
 		}
 		return false
