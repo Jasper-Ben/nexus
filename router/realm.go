@@ -437,9 +437,7 @@ func (r *realm) handleSession(sess *session) error {
 	r.onJoin(sess)
 	r.closeLock.Unlock()
 
-	if r.debug {
-		r.log.Println("Started session", sess.ID)
-	}
+	r.log.Println("Started session", sess.ID, sess.Details["authid"], sess.Details["authrole"])
 	go func() {
 		shutdown, killAll, err := r.handleInboundMessages(sess, r.clientStop)
 		if err != nil {
@@ -471,7 +469,7 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 		select {
 		case msg, open = <-recvChan:
 			if !open {
-				r.log.Println("Lost", sess)
+				r.log.Println("Lost", sess.ID, sess.Details["authid"], sess.Details["authrole"])
 				return false, false, nil
 			}
 		case <-stopChan:
