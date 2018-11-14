@@ -368,6 +368,7 @@ func (r *realm) onJoin(sess *session) {
 // Note: onLeave() must be called from outside handleInboundMessages so that it
 // is not called for the meta client.
 func (r *realm) onLeave(sess *session, shutdown, killAll bool) {
+	r.log.Println("Session leave", sess.ID, sess.Details["authid"], sess.Details["authrole"])
 	var testaments testamentBucket
 	var hasTstm bool
 	sync := make(chan struct{})
