@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,7 @@ type WebsocketConfig struct {
 // websocketPeer implements the Peer interface, connecting the Send and Recv
 // methods to a websocket.
 type websocketPeer struct {
+	close       *sync.Once
 	conn        *websocket.Conn
 	serializer  serialize.Serializer
 	payloadType int
@@ -118,6 +120,7 @@ func ConnectWebsocketPeer(url string, serialization serialize.Serialization, tls
 // is not received after 2 intervals have elapsed then the websocket is closed.
 func NewWebsocketPeer(conn *websocket.Conn, serializer serialize.Serializer, payloadType int, logger stdlog.StdLog, keepAlive time.Duration) wamp.Peer {
 	w := &websocketPeer{
+		close:       &sync.Once{},
 		conn:        conn,
 		serializer:  serializer,
 		payloadType: payloadType,
@@ -180,23 +183,25 @@ func (w *websocketPeer) Send(msg wamp.Message) error {
 //
 // *** Do not call Send after calling Close. ***
 func (w *websocketPeer) Close() {
-	// Tell sendHandler to exit, allowing it to finish sending any queued
-	// messages.  Do not close wr channel in case there are incoming messages
-	// during close.
-	w.wr <- nil
-	<-w.writerDone
+	w.close.Do(func() {
+		// Tell sendHandler to exit, allowing it to finish sending any queued
+		// messages.  Do not close wr channel in case there are incoming messages
+		// during close.
+		w.wr <- nil
+		<-w.writerDone
 
-	closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure,
-		"goodbye")
+		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure,
+			"goodbye")
 
-	// Tell recvHandler to close.
-	close(w.closed)
+		// Tell recvHandler to close.
+		close(w.closed)
 
-	// Ignore errors since websocket may have been closed by other side first
-	// in response to a goodbye message.
-	w.conn.WriteControl(websocket.CloseMessage, closeMsg,
-		time.Now().Add(ctrlTimeout))
-	w.conn.Close()
+		// Ignore errors since websocket may have been closed by other side first
+		// in response to a goodbye message.
+		w.conn.WriteControl(websocket.CloseMessage, closeMsg,
+			time.Now().Add(ctrlTimeout))
+		w.conn.Close()
+	})
 }
 
 // sendHandler pulls messages from the write channel, and pushes them to the

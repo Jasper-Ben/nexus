@@ -2,6 +2,7 @@ package transport
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/gammazero/nexus/wamp"
@@ -30,9 +31,9 @@ func LinkedPeers() (wamp.Peer, wamp.Peer) {
 	cToR := make(chan wamp.Message)
 
 	// router reads from and writes to client
-	r := &localPeer{rd: cToR, wr: rToC}
+	r := &localPeer{rd: cToR, wr: rToC, close: &sync.Once{}}
 	// client reads from and writes to router
-	c := &localPeer{rd: rToC, wr: cToR}
+	c := &localPeer{rd: rToC, wr: cToR, close: &sync.Once{}}
 
 	return c, r
 }
@@ -46,8 +47,9 @@ func IsLocal(p wamp.Peer) bool {
 
 // localPeer implements Peer
 type localPeer struct {
-	rd <-chan wamp.Message
-	wr chan<- wamp.Message
+	close *sync.Once
+	rd    <-chan wamp.Message
+	wr    chan<- wamp.Message
 }
 
 // Recv returns the channel this peer reads incoming messages from.
@@ -80,4 +82,8 @@ func (p *localPeer) Send(msg wamp.Message) error {
 
 // Close closes the outgoing channel, waking any readers waiting on data from
 // this peer.
-func (p *localPeer) Close() { close(p.wr) }
+func (p *localPeer) Close() {
+	p.close.Do(func() {
+		close(p.wr)
+	})
+}

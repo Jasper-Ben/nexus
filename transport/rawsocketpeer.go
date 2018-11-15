@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/gammazero/nexus/stdlog"
@@ -17,6 +18,7 @@ import (
 // rawSocketPeer implements the Peer interface, connecting the Send and Recv
 // methods to a socket.
 type rawSocketPeer struct {
+	close      *sync.Once
 	conn       net.Conn
 	serializer serialize.Serializer
 	sendLimit  int
@@ -128,6 +130,7 @@ func AcceptRawSocket(conn net.Conn, logger stdlog.StdLog, recvLimit int) (wamp.P
 // servers to handle connections from clients.
 func newRawSocketPeer(conn net.Conn, serializer serialize.Serializer, logger stdlog.StdLog, sendLimit, recvLimit int) *rawSocketPeer {
 	rs := &rawSocketPeer{
+		close:      &sync.Once{},
 		conn:       conn,
 		serializer: serializer,
 		sendLimit:  sendLimit,
@@ -185,18 +188,20 @@ func (rs *rawSocketPeer) Send(msg wamp.Message) error {
 //
 // *** Do not call Send after calling Close. ***
 func (rs *rawSocketPeer) Close() {
-	// Tell sendHandler to exit, allowing it to finish sending any queued
-	// messages.  Do not close wr channel in case there are incoming messages
-	// during close.
-	rs.wr <- nil
-	<-rs.writerDone
+	rs.close.Do(func() {
+		// Tell sendHandler to exit, allowing it to finish sending any queued
+		// messages.  Do not close wr channel in case there are incoming messages
+		// during close.
+		rs.wr <- nil
+		<-rs.writerDone
 
-	// Tell recvHandler to close.
-	close(rs.closed)
+		// Tell recvHandler to close.
+		close(rs.closed)
 
-	// Ignore errors since socket may have been closed by other side first in
-	// response to a goodbye message.
-	rs.conn.Close()
+		// Ignore errors since socket may have been closed by other side first in
+		// response to a goodbye message.
+		rs.conn.Close()
+	})
 }
 
 // sendHandler pulls messages from the write channel, and pushes them to the
