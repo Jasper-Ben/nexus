@@ -604,7 +604,7 @@ func (b *Broker) pubSubCreateMeta(topic wamp.URI, subSessID wamp.ID, sub *subscr
 func (b *Broker) trySend(sess *session, msg wamp.Message) bool {
 	if err := sess.TrySend(msg); err != nil {
 		b.log.Println("!!! broker dropped", msg.MessageType(), "for session", sess.ID, sess.Details["authid"], sess.Details["authrole"], "message:", err)
-		sess.Close()
+		go sess.kill(nil)
 		return false
 	}
 	return true
