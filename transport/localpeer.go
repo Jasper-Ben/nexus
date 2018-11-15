@@ -59,14 +59,15 @@ func (p *localPeer) TrySend(msg wamp.Message) error {
 	case p.wr <- msg:
 		return nil
 	default:
-	}
-
-	select {
-	case p.wr <- msg:
-	case <-time.After(sendTimeout):
 		return errors.New("blocked")
 	}
-	return nil
+	//
+	//	select {
+	//	case p.wr <- msg:
+	//	case <-time.After(sendTimeout):
+	//		return errors.New("blocked")
+	//	}
+	//	return nil
 }
 
 // Send writes a message to the peer's outbound message channel.

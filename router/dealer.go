@@ -1173,6 +1173,7 @@ func (d *Dealer) RegCountCallees(msg *wamp.Invocation) wamp.Message {
 func (d *Dealer) trySend(sess *session, msg wamp.Message) bool {
 	if err := sess.TrySend(msg); err != nil {
 		d.log.Println("!!! dealer dropped", msg.MessageType(), "for session", sess.ID, sess.Details["authid"], sess.Details["authrole"], "message:", err)
+		sess.Close()
 		return false
 	}
 	return true

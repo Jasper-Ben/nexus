@@ -158,14 +158,15 @@ func (w *websocketPeer) TrySend(msg wamp.Message) error {
 	case w.wr <- msg:
 		return nil
 	default:
-	}
-
-	select {
-	case w.wr <- msg:
-	case <-time.After(sendTimeout):
 		return errors.New("blocked")
 	}
-	return nil
+
+	// select {
+	// case w.wr <- msg:
+	// case <-time.After(sendTimeout):
+	// 	return errors.New("blocked")
+	// }
+	// return nil
 }
 
 func (w *websocketPeer) Send(msg wamp.Message) error {

@@ -163,14 +163,15 @@ func (rs *rawSocketPeer) TrySend(msg wamp.Message) error {
 	case rs.wr <- msg:
 		return nil
 	default:
-	}
-
-	select {
-	case rs.wr <- msg:
-	case <-time.After(time.Second):
 		return errors.New("blocked")
 	}
-	return nil
+
+	// select {
+	// case rs.wr <- msg:
+	// case <-time.After(time.Second):
+	// 	return errors.New("blocked")
+	// }
+	// return nil
 }
 
 func (rs *rawSocketPeer) Send(msg wamp.Message) error {
