@@ -47,9 +47,10 @@ func IsLocal(p wamp.Peer) bool {
 
 // localPeer implements Peer
 type localPeer struct {
-	close *sync.Once
-	rd    <-chan wamp.Message
-	wr    chan<- wamp.Message
+	closed bool
+	close  *sync.Once
+	rd     <-chan wamp.Message
+	wr     chan<- wamp.Message
 }
 
 // Recv returns the channel this peer reads incoming messages from.
@@ -57,6 +58,9 @@ func (p *localPeer) Recv() <-chan wamp.Message { return p.rd }
 
 // TrySend writes a message to the peer's outbound message channel.
 func (p *localPeer) TrySend(msg wamp.Message) error {
+	if p.closed {
+		return errors.New("closed")
+	}
 	select {
 	case p.wr <- msg:
 		return nil
@@ -76,6 +80,9 @@ func (p *localPeer) TrySend(msg wamp.Message) error {
 // Typically called by clients, since it is OK for the router to block a client
 // since this will not block other clients.
 func (p *localPeer) Send(msg wamp.Message) error {
+	if p.closed {
+		return errors.New("closed")
+	}
 	p.wr <- msg
 	return nil
 }
@@ -84,6 +91,7 @@ func (p *localPeer) Send(msg wamp.Message) error {
 // this peer.
 func (p *localPeer) Close() {
 	p.close.Do(func() {
+		p.closed = true
 		close(p.wr)
 	})
 }

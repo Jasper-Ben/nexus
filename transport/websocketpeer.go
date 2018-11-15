@@ -36,6 +36,7 @@ type WebsocketConfig struct {
 // websocketPeer implements the Peer interface, connecting the Send and Recv
 // methods to a websocket.
 type websocketPeer struct {
+	closedFlag  bool
 	close       *sync.Once
 	conn        *websocket.Conn
 	serializer  serialize.Serializer
@@ -120,6 +121,7 @@ func ConnectWebsocketPeer(url string, serialization serialize.Serialization, tls
 // is not received after 2 intervals have elapsed then the websocket is closed.
 func NewWebsocketPeer(conn *websocket.Conn, serializer serialize.Serializer, payloadType int, logger stdlog.StdLog, keepAlive time.Duration) wamp.Peer {
 	w := &websocketPeer{
+		closedFlag:  false,
 		close:       &sync.Once{},
 		conn:        conn,
 		serializer:  serializer,
@@ -157,6 +159,9 @@ func NewWebsocketPeer(conn *websocket.Conn, serializer serialize.Serializer, pay
 func (w *websocketPeer) Recv() <-chan wamp.Message { return w.rd }
 
 func (w *websocketPeer) TrySend(msg wamp.Message) error {
+	if w.closedFlag {
+		return errors.New("closed")
+	}
 	select {
 	case w.wr <- msg:
 		return nil
@@ -173,6 +178,9 @@ func (w *websocketPeer) TrySend(msg wamp.Message) error {
 }
 
 func (w *websocketPeer) Send(msg wamp.Message) error {
+	if w.closedFlag {
+		return errors.New("closed")
+	}
 	w.wr <- msg
 	return nil
 }
@@ -187,6 +195,7 @@ func (w *websocketPeer) Close() {
 		// Tell sendHandler to exit, allowing it to finish sending any queued
 		// messages.  Do not close wr channel in case there are incoming messages
 		// during close.
+		w.closedFlag = true
 		w.wr <- nil
 		<-w.writerDone
 

@@ -18,6 +18,7 @@ import (
 // rawSocketPeer implements the Peer interface, connecting the Send and Recv
 // methods to a socket.
 type rawSocketPeer struct {
+	closedFlag bool
 	close      *sync.Once
 	conn       net.Conn
 	serializer serialize.Serializer
@@ -130,6 +131,7 @@ func AcceptRawSocket(conn net.Conn, logger stdlog.StdLog, recvLimit int) (wamp.P
 // servers to handle connections from clients.
 func newRawSocketPeer(conn net.Conn, serializer serialize.Serializer, logger stdlog.StdLog, sendLimit, recvLimit int) *rawSocketPeer {
 	rs := &rawSocketPeer{
+		closedFlag: false,
 		close:      &sync.Once{},
 		conn:       conn,
 		serializer: serializer,
@@ -162,6 +164,9 @@ func newRawSocketPeer(conn net.Conn, serializer serialize.Serializer, logger std
 func (rs *rawSocketPeer) Recv() <-chan wamp.Message { return rs.rd }
 
 func (rs *rawSocketPeer) TrySend(msg wamp.Message) error {
+	if rs.closedFlag {
+		return errors.New("closed")
+	}
 	select {
 	case rs.wr <- msg:
 		return nil
@@ -178,6 +183,9 @@ func (rs *rawSocketPeer) TrySend(msg wamp.Message) error {
 }
 
 func (rs *rawSocketPeer) Send(msg wamp.Message) error {
+	if rs.closedFlag {
+		return errors.New("closed")
+	}
 	rs.wr <- msg
 	return nil
 }
@@ -189,6 +197,7 @@ func (rs *rawSocketPeer) Send(msg wamp.Message) error {
 // *** Do not call Send after calling Close. ***
 func (rs *rawSocketPeer) Close() {
 	rs.close.Do(func() {
+		rs.closedFlag = true
 		// Tell sendHandler to exit, allowing it to finish sending any queued
 		// messages.  Do not close wr channel in case there are incoming messages
 		// during close.

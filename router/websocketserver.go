@@ -290,6 +290,7 @@ func (s *WebsocketServer) ListenAndServeTLS(address string, tlscfg *tls.Config, 
 
 // ServeHTTP handles HTTP connections.
 func (s *WebsocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.log.Printf("New incoming connection from", r.RemoteAddr)
 	var authDict wamp.Dict
 	var nextCookie *http.Cookie
 
@@ -335,7 +336,7 @@ func (s *WebsocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
+	s.log.Printf("Handling connection from ", r.RemoteAddr)
 	s.handleWebsocket(conn, wamp.Dict{"auth": authDict})
 }
 
