@@ -292,6 +292,9 @@ func (b *Broker) newSubscription(subscriber *session, topic wamp.URI, match stri
 }
 
 func (b *Broker) subscribe(subscriber *session, msg *wamp.Subscribe, match string) {
+	if !subscriber.valid() {
+		return
+	}
 	var sub *subscription
 	var existingSub bool
 
@@ -475,6 +478,9 @@ func allowPublish(sub *session, filter PublishFilter) bool {
 // pubEvent sends an event to all subscribers that are not excluded from
 // receiving the event.
 func (b *Broker) pubEvent(pub *session, msg *wamp.Publish, pubID wamp.ID, sub *subscription, excludePublisher, sendTopic, disclose bool, filter PublishFilter) {
+	if !pub.valid() {
+		return
+	}
 	for subscriber, _ := range sub.subscribers {
 		// Do not send event to publisher.
 		if subscriber == pub && excludePublisher {

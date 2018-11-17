@@ -352,6 +352,9 @@ func (d *Dealer) run() {
 }
 
 func (d *Dealer) register(callee *session, msg *wamp.Register, match, invokePolicy string, disclose, wampURI bool) {
+	if !callee.valid() {
+		return
+	}
 	var reg *registration
 	switch match {
 	default:
@@ -562,6 +565,9 @@ func (d *Dealer) matchProcedure(procedure wamp.URI) (*registration, bool) {
 }
 
 func (d *Dealer) call(caller *session, msg *wamp.Call) {
+	if !caller.valid() {
+		return
+	}
 	reg, ok := d.matchProcedure(msg.Procedure)
 	if !ok || len(reg.callees) == 0 {
 		// If no registered procedure, send error.

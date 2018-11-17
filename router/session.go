@@ -31,7 +31,11 @@ func (s *session) rLock()   { s.rwlock.RLock() }
 func (s *session) rUnlock() { s.rwlock.RUnlock() }
 func (s *session) lock()    { s.rwlock.Lock() }
 func (s *session) unlock()  { s.rwlock.Unlock() }
-
+func (s *session) valid() bool {
+	defer s.rwlock.RUnlock()
+	s.rwlock.RLock()
+	return s.killChan != nil
+}
 func (s *session) kill(goodbye *wamp.Goodbye) bool {
 	defer s.rwlock.Unlock()
 	s.rwlock.Lock()
