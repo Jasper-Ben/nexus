@@ -109,6 +109,9 @@ type realm struct {
 	metaProcMap map[wamp.ID]func(*wamp.Invocation) wamp.Message
 	metaDone    chan struct{}
 
+	// Decorators
+	decorators map[wamp.ID]*Decorator
+
 	closed    bool
 	closeLock sync.Mutex
 
@@ -247,7 +250,8 @@ func (r *realm) close() {
 	// than can submit request to the broker and dealer, so now that these are
 	// finished there can be no more messages to broker and dealer.
 
-	// No new messages, so safe to close dealer and broker.  Stop broker and
+	// No new messages, so safe to close dealer and broker.  Stop broker andtype DecoratorCallType int
+
 	// dealer so they can be GC'd, and then so can this realm.
 	r.dealer.Close()
 	r.broker.Close()
@@ -294,6 +298,9 @@ func (r *realm) run() {
 	// Register to handle testament meta procedures.
 	r.registerMetaProcedure(wamp.MetaProcSessionAddTestament, r.testamentAdd)
 	r.registerMetaProcedure(wamp.MetaProcSessionFlushTestaments, r.testamentFlush)
+
+	// Register to handle decorator meta procedures.
+	r.registerMetaProcedure(wamp.MetaProcDecoratorAdd, r.AddDecoratorHandler)
 
 	go r.metaProcedureHandler()
 

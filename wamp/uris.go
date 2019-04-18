@@ -228,4 +228,13 @@ const (
 	// Remove the Testaments for that Session, either for when it is detached
 	// or destroyed.
 	MetaProcSessionFlushTestaments = URI("wamp.session.flush_testaments")
+
+
+	// -- Decorator Meta Procedures --
+
+	// Add a decorator, which gets called on calls or publishes.
+	MetaProcDecoratorAdd = URI("wamp.decorator.add")
+
+	// Removes a decorator
+	MetaProcDecoratorRemove = URI("wamp.decorator.remove")
 )

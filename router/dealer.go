@@ -683,8 +683,8 @@ func (d *Dealer) call(caller *session, msg *wamp.Call) {
 	d.invocations[invocationID] = &invocation{
 		callID: reqID,
 		callee: callee,
-}
-d.invocationByCall[reqID] = invocationID
+	}
+	d.invocationByCall[reqID] = invocationID
 
 	// Send INVOCATION to the endpoint that has registered the requested
 	// procedure.

@@ -1,5 +1,8 @@
 package wamp
 
+type DecoratorCallType string
+type DecoratorType string
+
 // Consts for message options and option values.
 const (
 	// Message option keywords.
@@ -37,4 +40,14 @@ const (
 	// Options for subscriber filtering.
 	BlacklistKey = "exclude"
 	WhitelistKey = "eligible"
+
+	// Options for decorators.
+	DecoratorTypePreprocess DecoratorType = "preprocess"
+	DecoratorTypePrecall    DecoratorType = "precall"
+	DecoratorTypePostcall   DecoratorType = "postcall"
+	DecoratorTypePublish    DecoratorType = "publish"
+	DecoratorTypeEvent      DecoratorType = "event"
+
+	DecoratorCallTypeSync  DecoratorCallType = "sync"
+	DecoratorCallTypeAsync DecoratorCallType = "async"
 )
