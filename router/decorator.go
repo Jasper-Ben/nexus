@@ -115,3 +115,16 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorId}}
 
 }
+
+func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
+
+	decoratorId, isOk := wamp.AsID(msg.Arguments[0])
+	if !isOk {
+		return makeError(msg.Request, wamp.ErrInvalidArgument)
+	}
+
+	r.log.Printf("Removing Decorator with Id %v", decoratorId)
+	delete(r.decorators, decoratorId)
+
+	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorId}}
+}

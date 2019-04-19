@@ -301,6 +301,7 @@ func (r *realm) run() {
 
 	// Register to handle decorator meta procedures.
 	r.registerMetaProcedure(wamp.MetaProcDecoratorAdd, r.AddDecoratorHandler)
+	r.registerMetaProcedure(wamp.MetaProcDecoratorRemove, r.RemoveDecoratorHandler)
 
 	go r.metaProcedureHandler()
 
