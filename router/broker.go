@@ -339,13 +339,13 @@ func (b *Broker) subscribe(subscriber *session, msg *wamp.Subscribe, match strin
 	}
 
 	// Add the subscription ID to the set of subscriptions for the subscriber.
-	subIdSet, ok := b.sessionSubIDSet[subscriber]
+	subIDSet, ok := b.sessionSubIDSet[subscriber]
 	if !ok {
 		// This subscriber does not have any other subscriptions, so new set.
-		subIdSet = map[wamp.ID]struct{}{}
-		b.sessionSubIDSet[subscriber] = subIdSet
+		subIDSet = map[wamp.ID]struct{}{}
+		b.sessionSubIDSet[subscriber] = subIDSet
 	}
-	subIdSet[sub.id] = struct{}{}
+	subIDSet[sub.id] = struct{}{}
 
 	// Tell sender the new subscription ID.
 	b.trySend(subscriber, &wamp.Subscribed{Request: msg.Request, Subscription: sub.id})
