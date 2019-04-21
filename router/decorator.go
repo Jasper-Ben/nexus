@@ -47,19 +47,17 @@ type Decorator struct {
 	handlerURI wamp.URI
 	order      int64
 	callType   wamp.DecoratorCallType
+	id         wamp.ID
 }
 
 func (r *realm) NewDecorator(
-	decoratorType wamp.DecoratorType,
-	matchURI wamp.URI,
-	matchType string,
 	handlerURI wamp.URI,
 	order int64,
 	callType wamp.DecoratorCallType,
 ) (*Decorator, wamp.URI) {
 
+	// check whether the handler is a valid and registered procedure.
 	_, hasRegistration := r.dealer.matchProcedure(handlerURI)
-
 	if !hasRegistration {
 		return nil, wamp.ErrNoSuchProcedure
 	}
@@ -68,6 +66,7 @@ func (r *realm) NewDecorator(
 		handlerURI,
 		order,
 		callType,
+		wamp.GlobalID(),
 	}
 
 	return &createdDecorator, ""
@@ -77,36 +76,34 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 
 	r.log.Print("AddDecoratorHandler called")
 
-	decoratorString, isOk := wamp.AsString(msg.Arguments[0])
+	decoratorKind, isOk := wamp.AsString(msg.Arguments[0])
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
 
-	var decoratorType wamp.DecoratorType
+	var dm *decoratorMap
+	var syncChan chan func()
+	switch wamp.DecoratorType(decoratorKind) {
+	case wamp.DecoratorTypePreprocess:
+		dm = r.dealer.preprocessDecorators
+		syncChan = r.dealer.actionChan
+	case wamp.DecoratorTypePrecall:
+		dm = r.dealer.precallDecorators
+		syncChan = r.dealer.actionChan
+	case wamp.DecoratorTypePostcall:
+		dm = r.dealer.postcallDecorators
+		syncChan = r.dealer.actionChan
 
-	switch wamp.DecoratorType(decoratorString) {
-	case "preprocess":
-		decoratorType = wamp.DecoratorTypePreprocess
-	case "precall":
-		decoratorType = wamp.DecoratorTypePrecall
-	case "postcall":
-		decoratorType = wamp.DecoratorTypePostcall
-	case "publish":
-		decoratorType = wamp.DecoratorTypePublish
-	case "event":
-		decoratorType = wamp.DecoratorTypeEvent
+	case wamp.DecoratorTypePublish:
+		dm = r.broker.publishDecorators
+		syncChan = r.broker.actionChan
+	case wamp.DecoratorTypeEvent:
+		dm = r.broker.eventDecorators
+		syncChan = r.broker.actionChan
 	default:
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
 
-	matchURI, isOk := wamp.AsURI(msg.Arguments[1])
-	if !isOk {
-		return makeError(msg.Request, wamp.ErrInvalidArgument)
-	}
-	matchType, isOk := wamp.AsString(msg.Arguments[2])
-	if !isOk {
-		return makeError(msg.Request, wamp.ErrInvalidArgument)
-	}
 	handlerURI, isOk := wamp.AsURI(msg.Arguments[3])
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
@@ -120,9 +117,7 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
-
 	var callType wamp.DecoratorCallType
-
 	switch wamp.DecoratorCallType(callTypeString) {
 	case "sync":
 		callType = wamp.DecoratorCallTypeSync
@@ -132,20 +127,42 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
 
-	createdDecorator, errURI := r.NewDecorator(decoratorType, matchURI, matchType, handlerURI, order, callType)
+	createdDecorator, errURI := r.NewDecorator(handlerURI, order, callType)
 
 	// TODO: Think about empty string as empty wamp uri.
 	if errURI != "" {
 		return makeError(msg.Request, errURI)
 	}
 
-	decoratorID := wamp.GlobalID()
-	r.decorators[decoratorID] = createdDecorator
+	matchURI, isOk := wamp.AsURI(msg.Arguments[1])
+	if !isOk {
+		return makeError(msg.Request, wamp.ErrInvalidArgument)
+	}
+	matchType, isOk := wamp.AsString(msg.Arguments[2])
+	if !isOk {
+		return makeError(msg.Request, wamp.ErrInvalidArgument)
+	}
+	done := make(chan bool)
+	syncChan <- func() {
+		var target map[wamp.URI][]*Decorator
+		switch matchType {
+		case wamp.MatchPrefix:
+			target = dm.prefixMatch
+		case wamp.MatchWildcard:
+			target = dm.wildcardMatch
+		default:
+			target = dm.exactMatch
+		}
 
-	r.log.Printf("Created Decorator with ID %v", decoratorID)
+		list := target[matchURI]
+		list = append(list, createdDecorator)
+		target[matchURI] = list
+		done <- true
+	}
+	<-done
 
-	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorID}}
-
+	r.log.Printf("Created and regstered decorator with ID %v", createdDecorator.id)
+	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{createdDecorator.id}}
 }
 
 func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {

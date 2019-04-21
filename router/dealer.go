@@ -63,6 +63,9 @@ type invocation struct {
 	callee   *session
 	canceled bool
 }
+type call struct {
+	client *session
+}
 
 type requestID struct {
 	session wamp.ID
@@ -76,13 +79,15 @@ type Dealer struct {
 	wcProcRegMap  map[wamp.URI]*registration
 
 	preprocessDecorators *decoratorMap
+	precallDecorators    *decoratorMap
+	postcallDecorators   *decoratorMap
 
 	// registration ID -> registration
 	// Used to lookup registration by ID, needed for unregister.
 	registrations map[wamp.ID]*registration
 
 	// call ID -> caller session
-	calls map[requestID]*session
+	calls map[requestID]*call
 
 	// invocation ID -> {call ID, callee, canceled}
 	invocations map[wamp.ID]*invocation
@@ -128,10 +133,12 @@ func NewDealer(logger stdlog.StdLog, strictURI, allowDisclose, debug bool) *Deal
 		wcProcRegMap:  map[wamp.URI]*registration{},
 
 		preprocessDecorators: newDecoratorMap(),
+		precallDecorators:    newDecoratorMap(),
+		postcallDecorators:   newDecoratorMap(),
 
 		registrations: map[wamp.ID]*registration{},
 
-		calls:            map[requestID]*session{},
+		calls:            map[requestID]*call{},
 		invocations:      map[wamp.ID]*invocation{},
 		invocationByCall: map[requestID]wamp.ID{},
 		calleeRegIDSet:   map[*session]map[wamp.ID]struct{}{},
@@ -573,6 +580,16 @@ func (d *Dealer) matchProcedure(procedure wamp.URI) (*registration, bool) {
 }
 
 func (d *Dealer) call(caller *session, msg *wamp.Call) {
+	decorators := d.preprocessDecorators.matchDecorators(msg.Procedure)
+	// Basically, we have two cases:
+	// 1. No decorator was found, in this case, proceed the call just as we already do.
+	// 2. One or more decorators were found, in this case, start by invoking the first decorator
+	//  by just constructing the CALL message and keep the reference to the old one around.
+	if len(decorators) > 0 {
+
+		return
+	}
+
 	reg, ok := d.matchProcedure(msg.Procedure)
 	if !ok || len(reg.callees) == 0 {
 		// If no registered procedure, send error.
@@ -684,7 +701,9 @@ func (d *Dealer) call(caller *session, msg *wamp.Call) {
 		session: caller.ID,
 		request: msg.Request,
 	}
-	d.calls[reqID] = caller
+	d.calls[reqID] = &call{
+		client: caller,
+	}
 	invocationID := d.idGen.Next()
 	d.invocations[invocationID] = &invocation{
 		callID: reqID,
@@ -723,7 +742,7 @@ func (d *Dealer) cancel(caller *session, msg *wamp.Cancel, mode string, reason w
 	}
 
 	// Check if the caller of cancel is also the caller of the procedure.
-	if caller != procCaller {
+	if caller != procCaller.client {
 		// The caller it trying to cancel calls that it does not own.  It it
 		// either confused or trying to do something bad.
 		d.log.Println("CANCEL received from caller", caller,
@@ -850,7 +869,7 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 	}
 
 	// Send RESULT to the caller.  This forwards the YIELD from the callee.
-	d.trySend(caller, &wamp.Result{
+	d.trySend(caller.client, &wamp.Result{
 		Request:     callID.request,
 		Details:     details,
 		Arguments:   msg.Arguments,
@@ -884,7 +903,7 @@ func (d *Dealer) error(msg *wamp.Error) {
 	delete(d.calls, callID)
 
 	// Send error to the caller.
-	d.trySend(caller, &wamp.Error{
+	d.trySend(caller.client, &wamp.Error{
 		Type:        wamp.CALL,
 		Request:     callID.request,
 		Error:       msg.Error,
@@ -931,7 +950,7 @@ func (d *Dealer) removeSession(sess *session) {
 
 	// Remove any pending calls for the removed session.
 	for req, caller := range d.calls {
-		if caller != sess {
+		if caller.client != sess {
 			continue
 		}
 		// Removed session has pending call.

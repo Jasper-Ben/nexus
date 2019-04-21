@@ -50,6 +50,9 @@ type Broker struct {
 	pfxTopicSubscription map[wamp.URI]*subscription
 	wcTopicSubscription  map[wamp.URI]*subscription
 
+	publishDecorators *decoratorMap
+	eventDecorators   *decoratorMap
+
 	// subscription ID -> subscription
 	subscriptions map[wamp.ID]*subscription
 
@@ -81,6 +84,9 @@ func NewBroker(logger stdlog.StdLog, strictURI, allowDisclose, debug bool, publi
 		topicSubscription:    map[wamp.URI]*subscription{},
 		pfxTopicSubscription: map[wamp.URI]*subscription{},
 		wcTopicSubscription:  map[wamp.URI]*subscription{},
+
+		publishDecorators: newDecoratorMap(),
+		eventDecorators:   newDecoratorMap(),
 
 		subscriptions:   map[wamp.ID]*subscription{},
 		sessionSubIDSet: map[*session]map[wamp.ID]struct{}{},
