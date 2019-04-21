@@ -22,7 +22,7 @@ func TestDecorator(t *testing.T) {
 			"preprocess",
 			"foo.test.bar",
 			"exact",
-			"decoratortest.handlerUri",
+			"decoratortest.handlerURI",
 			0,
 			"sync",
 		},

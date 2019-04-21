@@ -15,6 +15,7 @@ const (
 	roleCaller = "caller"
 
 	featureCallCanceling    = "call_canceling"
+	featureCallDecoration   = "call_decoration"
 	featureCallTimeout      = "call_timeout"
 	featureCallerIdent      = "caller_identification"
 	featurePatternBasedReg  = "pattern_based_registration"
@@ -29,6 +30,7 @@ const (
 var dealerRole = wamp.Dict{
 	"features": wamp.Dict{
 		featureCallCanceling:    true,
+		featureCallDecoration:   true,
 		featureCallTimeout:      true,
 		featureCallerIdent:      true,
 		featurePatternBasedReg:  true,
@@ -72,6 +74,8 @@ type Dealer struct {
 	procRegMap    map[wamp.URI]*registration
 	pfxProcRegMap map[wamp.URI]*registration
 	wcProcRegMap  map[wamp.URI]*registration
+
+	preprocessDecorators *decoratorMap
 
 	// registration ID -> registration
 	// Used to lookup registration by ID, needed for unregister.
@@ -122,6 +126,8 @@ func NewDealer(logger stdlog.StdLog, strictURI, allowDisclose, debug bool) *Deal
 		procRegMap:    map[wamp.URI]*registration{},
 		pfxProcRegMap: map[wamp.URI]*registration{},
 		wcProcRegMap:  map[wamp.URI]*registration{},
+
+		preprocessDecorators: newDecoratorMap(),
 
 		registrations: map[wamp.ID]*registration{},
 

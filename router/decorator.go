@@ -1,44 +1,76 @@
 package router
 
-import "github.com/gammazero/nexus/wamp"
+import (
+	"sort"
+
+	"github.com/gammazero/nexus/wamp"
+)
+
+type decoratorMap struct {
+	prefixMatch   map[wamp.URI][]*Decorator
+	wildcardMatch map[wamp.URI][]*Decorator
+	exactMatch    map[wamp.URI][]*Decorator
+}
+
+func (dm *decoratorMap) matchDecorators(procedure wamp.URI) []*Decorator {
+	decorators := []*Decorator{}
+
+	exactList := dm.exactMatch[procedure]
+	decorators = append(decorators, exactList...)
+	for pfxURI, pfxDecList := range dm.prefixMatch {
+		if !procedure.PrefixMatch(pfxURI) {
+			continue
+		}
+		decorators = append(decorators, pfxDecList...)
+	}
+	for wcURI, wcDecList := range dm.wildcardMatch {
+		if !procedure.WildcardMatch(wcURI) {
+			continue
+		}
+		decorators = append(decorators, wcDecList...)
+	}
+	sort.Slice(decorators, func(i, j int) bool {
+		return decorators[i].order < decorators[j].order
+	})
+	return decorators
+}
+
+func newDecoratorMap() *decoratorMap {
+	return &decoratorMap{
+		prefixMatch:   make(map[wamp.URI][]*Decorator),
+		wildcardMatch: make(map[wamp.URI][]*Decorator),
+		exactMatch:    make(map[wamp.URI][]*Decorator),
+	}
+}
 
 type Decorator struct {
-	decoratorType wamp.DecoratorType
-
-	matchUri wamp.URI
-	// TODO: Create wamp.MatchType
-	matchType  string
-	handlerUri wamp.URI
+	handlerURI wamp.URI
 	order      int64
 	callType   wamp.DecoratorCallType
 }
 
 func (r *realm) NewDecorator(
 	decoratorType wamp.DecoratorType,
-	matchUri wamp.URI,
+	matchURI wamp.URI,
 	matchType string,
-	handlerUri wamp.URI,
+	handlerURI wamp.URI,
 	order int64,
 	callType wamp.DecoratorCallType,
 ) (*Decorator, wamp.URI) {
 
-	_, hasRegistration := r.dealer.matchProcedure(handlerUri)
+	_, hasRegistration := r.dealer.matchProcedure(handlerURI)
 
 	if !hasRegistration {
 		return nil, wamp.ErrNoSuchProcedure
 	}
 
 	createdDecorator := Decorator{
-		decoratorType,
-		matchUri,
-		matchType,
-		handlerUri,
+		handlerURI,
 		order,
 		callType,
 	}
 
 	return &createdDecorator, ""
-
 }
 
 func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
@@ -67,7 +99,7 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
 
-	matchUri, isOk := wamp.AsURI(msg.Arguments[1])
+	matchURI, isOk := wamp.AsURI(msg.Arguments[1])
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
@@ -75,7 +107,7 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
-	handlerUri, isOk := wamp.AsURI(msg.Arguments[3])
+	handlerURI, isOk := wamp.AsURI(msg.Arguments[3])
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
@@ -100,31 +132,31 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
 
-	createdDecorator, errUri := r.NewDecorator(decoratorType, matchUri, matchType, handlerUri, order, callType)
+	createdDecorator, errURI := r.NewDecorator(decoratorType, matchURI, matchType, handlerURI, order, callType)
 
 	// TODO: Think about empty string as empty wamp uri.
-	if errUri != "" {
-		return makeError(msg.Request, errUri)
+	if errURI != "" {
+		return makeError(msg.Request, errURI)
 	}
 
-	decoratorId := wamp.GlobalID()
-	r.decorators[decoratorId] = createdDecorator
+	decoratorID := wamp.GlobalID()
+	r.decorators[decoratorID] = createdDecorator
 
-	r.log.Printf("Created Decorator with Id %v", decoratorId)
+	r.log.Printf("Created Decorator with ID %v", decoratorID)
 
-	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorId}}
+	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorID}}
 
 }
 
 func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 
-	decoratorId, isOk := wamp.AsID(msg.Arguments[0])
+	decoratorID, isOk := wamp.AsID(msg.Arguments[0])
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
 
-	r.log.Printf("Removing Decorator with Id %v", decoratorId)
-	delete(r.decorators, decoratorId)
+	r.log.Printf("Removing Decorator with ID %v", decoratorID)
+	delete(r.decorators, decoratorID)
 
-	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorId}}
+	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorID}}
 }
