@@ -849,6 +849,7 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 		callObj.currentInvocationMessage = invocationMessage
 		callObj.targetCallee = targetCallee
 		callObj.preCallDecorators = d.precallDecorators.matchDecorators(callObj.currentCallMessage.Procedure)
+		callObj.postCallDecorators = d.postcallDecorators.matchDecorators(callObj.currentCallMessage.Procedure)
 		if len(callObj.preCallDecorators) > 0 {
 			callObj.currentState = callStatePrecallDecorators
 		} else {
