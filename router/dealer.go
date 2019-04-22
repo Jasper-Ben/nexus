@@ -374,7 +374,7 @@ func (d *Dealer) Error(origin *session, msg *wamp.Error) {
 	}
 }
 
-// Remove a callee's registrations.  This is called when a client leaves the
+// RemoveSession is called when a client leaves the
 // realm by sending a GOODBYE message or by disconnecting from the router.  If
 // there are any registrations for this session wamp.registration.on_unregister
 // and wamp.registration.on_delete meta events are published for each.
