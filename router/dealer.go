@@ -89,6 +89,8 @@ type call struct {
 
 	// Whether this call was canceled in-flight
 	canceled bool
+	// Whether to ignore the result, used for async decorators
+	dropResult bool
 
 	// The call message which might be changed due to decorator calls.
 	// TBD: Evaluate whether we want to keep the original call message.
@@ -610,7 +612,7 @@ func (d *Dealer) matchProcedure(procedure wamp.URI) (*registration, bool) {
 	return reg, ok
 }
 
-func (d *Dealer) buildInvocation(callObj *call, msg *wamp.Call, procedure wamp.URI, isDecorator bool) (*session, *wamp.Invocation, *wamp.Error) {
+func (d *Dealer) buildInvocation(callObj *call, msg *wamp.Call, procedure wamp.URI, isDecorator bool, isSync bool) (*session, *wamp.Invocation, *wamp.Error) {
 	reg, ok := d.matchProcedure(procedure)
 	if !ok || len(reg.callees) == 0 {
 		// If no registered procedure, send error.
@@ -718,8 +720,12 @@ func (d *Dealer) buildInvocation(callObj *call, msg *wamp.Call, procedure wamp.U
 	if isDecorator {
 		details[wamp.OptDecoratedProcedure] = msg.Procedure
 	}
+	requestID := callObj.callID
+	if !isSync {
+		requestID = wamp.GlobalID()
+	}
 	return callee, &wamp.Invocation{
-		Request:      callObj.callID,
+		Request:      requestID,
 		Registration: reg.id,
 		Details:      details,
 		Arguments:    msg.Arguments,
@@ -727,9 +733,9 @@ func (d *Dealer) buildInvocation(callObj *call, msg *wamp.Call, procedure wamp.U
 	}, nil
 }
 
-func (d *Dealer) callInt(callObj *call, msg *wamp.Call, procedure wamp.URI, isDecorator bool) *wamp.Error {
+func (d *Dealer) callInt(callObj *call, msg *wamp.Call, procedure wamp.URI, isDecorator bool, isSync bool) *wamp.Error {
 	// perform the router processing, doing some error checks etc.
-	callee, invocation, err := d.buildInvocation(callObj, msg, procedure, isDecorator)
+	callee, invocation, err := d.buildInvocation(callObj, msg, procedure, isDecorator, isSync)
 	if err != nil {
 		return err
 	}
@@ -744,8 +750,15 @@ func (d *Dealer) callInt(callObj *call, msg *wamp.Call, procedure wamp.URI, isDe
 			Arguments: wamp.List{"client blocked - cannot call procedure"},
 		}
 	}
-	// store the callee we just sent the invocation to
-	callObj.currentCallee = callee
+	if isSync {
+		// store the callee we just sent the invocation to
+		callObj.currentCallee = callee
+	} else {
+		callObj := &call{
+			dropResult: true,
+		}
+		d.invocations[invocation.Request] = callObj
+	}
 	return nil
 }
 
@@ -781,6 +794,9 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			preProcessDecorators:     decorators,
 			preCallDecorators:        nil,
 			postCallDecorators:       nil,
+
+			canceled:   false,
+			dropResult: false,
 		}
 		d.invocations[uniqueID] = callObj
 		d.invocationByCall[requestID{
@@ -789,15 +805,15 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 		}] = uniqueID
 	}
 
-	if callObj.currentState == callStatePreprocessDecorators && len(callObj.preProcessDecorators) > 0 {
-		// TODO: Call the first preprocess decorator and slice it off the array.
+	for callObj.currentState == callStatePreprocessDecorators && len(callObj.preProcessDecorators) > 0 {
+		isSync := callObj.preProcessDecorators[0].callType == wamp.DecoratorCallTypeSync
 		if err := d.callInt(callObj, &wamp.Call{
 			Request:     callObj.callerRequestID,
 			Procedure:   callObj.originalCall.Procedure,
 			Options:     callObj.originalCall.Options,
 			Arguments:   wamp.List{callObj.currentCallMessage},
 			ArgumentsKw: wamp.Dict{},
-		}, callObj.preProcessDecorators[0].handlerURI, true); err != nil {
+		}, callObj.preProcessDecorators[0].handlerURI, true, isSync); err != nil {
 			delete(d.invocations, uniqueID)
 			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
 			d.trySend(callObj.caller, err)
@@ -805,9 +821,16 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			callObj.preProcessDecorators = callObj.preProcessDecorators[1:]
 			if len(callObj.preProcessDecorators) == 0 {
 				callObj.currentState = callStateProcessing
+				if !isSync {
+					// chain is empty, no more synchronous results to come, so move on to the processing
+					break
+				}
 			}
 		}
-		return
+		if isSync {
+			// await the first synchronous result and then move on.
+			return
+		}
 	}
 	if callObj.currentState == callStateProcessing {
 		targetCallee, invocationMessage, errorMessage := d.buildInvocation(callObj, &wamp.Call{
@@ -816,7 +839,7 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			Arguments:   callObj.currentCallMessage.Arguments,
 			ArgumentsKw: callObj.currentCallMessage.ArgumentsKw,
 			Procedure:   callObj.currentCallMessage.Procedure,
-		}, callObj.currentCallMessage.Procedure, false)
+		}, callObj.currentCallMessage.Procedure, false, true)
 		if errorMessage != nil {
 			delete(d.invocations, uniqueID)
 			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
@@ -832,16 +855,15 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			callObj.currentState = callStateResult
 		}
 	}
-	if callObj.currentState == callStatePrecallDecorators && len(callObj.preCallDecorators) > 0 {
-		// TODO: Call the first precall decorator and slice it off the array.
-		// TODO: Call the first preprocess decorator and slice it off the array.
+	for callObj.currentState == callStatePrecallDecorators && len(callObj.preCallDecorators) > 0 {
+		isSync := callObj.preCallDecorators[0].callType == wamp.DecoratorCallTypeSync
 		if err := d.callInt(callObj, &wamp.Call{
 			Request:     callObj.callerRequestID,
 			Procedure:   callObj.originalCall.Procedure,
 			Options:     callObj.originalCall.Options,
 			Arguments:   wamp.List{callObj.currentInvocationMessage},
 			ArgumentsKw: wamp.Dict{},
-		}, callObj.preCallDecorators[0].handlerURI, true); err != nil {
+		}, callObj.preCallDecorators[0].handlerURI, true, isSync); err != nil {
 			delete(d.invocations, uniqueID)
 			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
 			d.trySend(callObj.caller, err)
@@ -849,9 +871,16 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			callObj.preCallDecorators = callObj.preCallDecorators[1:]
 			if len(callObj.preCallDecorators) == 0 {
 				callObj.currentState = callStateResult
+				if !isSync {
+					// chain is empty, no more synchronous results to come, so move on to the processing
+					break
+				}
 			}
 		}
-		return
+		if isSync {
+			// await the first synchronous result and then move on.
+			return
+		}
 	}
 
 	// If we get here, it means that for the call request,
@@ -993,6 +1022,10 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 			d.log.Println("YIELD received with unknown invocation request ID:",
 				msg.Request)
 		}
+		return
+	}
+	if callObj.dropResult {
+		delete(d.invocations, msg.Request)
 		return
 	}
 
