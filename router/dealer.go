@@ -42,7 +42,16 @@ var dealerRole = wamp.Dict{
 	},
 }
 
-// remoteProcedure tracks in-progress remote procedure call
+type callState uint
+
+const (
+	callStatePreprocessDecorators callState = iota
+	callStateProcessing
+	callStatePrecallDecorators
+	callStateResult
+)
+
+// registration holds the details of one or more registered remote procedure
 type registration struct {
 	id         wamp.ID  // registration ID
 	procedure  wamp.URI // procedure this registration is for
@@ -57,14 +66,39 @@ type registration struct {
 	callees []*session
 }
 
-// invocation tracks in-progress invocation
-type invocation struct {
-	callID   requestID
-	callee   *session
-	canceled bool
-}
+// call tracks all required properties for an invocation
 type call struct {
-	client *session
+	// The caller, i.e. the session which has originally initiated the call.
+	caller *session
+	// Request field in the original Call message
+	callerRequestID wamp.ID
+	originalCall    *wamp.Call
+
+	// globally unique call ID
+	callID wamp.ID
+
+	currentState callState
+	// The callee, i.e. the session the current processing step is routed to.
+	currentCallee *session
+	// The target callee, i.e. the session the call ultimately will be routed to.
+	targetCallee *session
+	// More callees which are currently in-flight, but their results are unused.
+	// This list is used for async decorators, because their results should be discarded.
+	additionalCallees map[wamp.ID]bool
+
+	// Whether this call was canceled in-flight
+	canceled bool
+
+	// The call message which might be changed due to decorator calls.
+	// TBD: Evaluate whether we want to keep the original call message.
+	currentCallMessage *wamp.Call
+	// The invocation message which might be changed due to decorator calls.
+	// TBD: Evaluate whether we want to keep the original invocation message.
+	currentInvocationMessage *wamp.Invocation
+
+	preProcessDecorators []*Decorator
+	preCallDecorators    []*Decorator
+	postCallDecorators   []*Decorator
 }
 
 type requestID struct {
@@ -86,13 +120,10 @@ type Dealer struct {
 	// Used to lookup registration by ID, needed for unregister.
 	registrations map[wamp.ID]*registration
 
-	// call ID -> caller session
-	calls map[requestID]*call
+	// invocation ID -> call state
+	invocations map[wamp.ID]*call
 
-	// invocation ID -> {call ID, callee, canceled}
-	invocations map[wamp.ID]*invocation
-
-	// call ID -> invocation ID (for cancel)
+	// call ID -> invocation ID (for cancel, preprocess decorators)
 	invocationByCall map[requestID]wamp.ID
 
 	// callee session -> registration ID set.
@@ -136,12 +167,11 @@ func NewDealer(logger stdlog.StdLog, strictURI, allowDisclose, debug bool) *Deal
 		precallDecorators:    newDecoratorMap(),
 		postcallDecorators:   newDecoratorMap(),
 
-		registrations: map[wamp.ID]*registration{},
+		registrations:  map[wamp.ID]*registration{},
+		calleeRegIDSet: map[*session]map[wamp.ID]struct{}{},
 
-		calls:            map[requestID]*call{},
-		invocations:      map[wamp.ID]*invocation{},
 		invocationByCall: map[requestID]wamp.ID{},
-		calleeRegIDSet:   map[*session]map[wamp.ID]struct{}{},
+		invocations:      map[wamp.ID]*call{},
 
 		// The action handler should be nearly always runable, since it is the
 		// critical section that does the only routing.  So, and unbuffered
@@ -273,7 +303,7 @@ func (d *Dealer) Call(caller *session, msg *wamp.Call) {
 		panic("dealer.Call with nil session or message")
 	}
 	d.actionChan <- func() {
-		d.call(caller, msg)
+		d.call(caller, msg, wamp.GlobalID())
 	}
 }
 
@@ -579,27 +609,16 @@ func (d *Dealer) matchProcedure(procedure wamp.URI) (*registration, bool) {
 	return reg, ok
 }
 
-func (d *Dealer) call(caller *session, msg *wamp.Call) {
-	decorators := d.preprocessDecorators.matchDecorators(msg.Procedure)
-	// Basically, we have two cases:
-	// 1. No decorator was found, in this case, proceed the call just as we already do.
-	// 2. One or more decorators were found, in this case, start by invoking the first decorator
-	//  by just constructing the CALL message and keep the reference to the old one around.
-	if len(decorators) > 0 {
-
-		return
-	}
-
-	reg, ok := d.matchProcedure(msg.Procedure)
+func (d *Dealer) buildInvocation(callObj *call, msg *wamp.Call, procedure wamp.URI, isDecorator bool) (*session, *wamp.Invocation, *wamp.Error) {
+	reg, ok := d.matchProcedure(procedure)
 	if !ok || len(reg.callees) == 0 {
 		// If no registered procedure, send error.
-		d.trySend(caller, &wamp.Error{
+		return nil, nil, &wamp.Error{
 			Type:    msg.MessageType(),
 			Request: msg.Request,
 			Details: wamp.Dict{},
 			Error:   wamp.ErrNoSuchProcedure,
-		})
-		return
+		}
 	}
 
 	var callee *session
@@ -655,9 +674,9 @@ func (d *Dealer) call(caller *session, msg *wamp.Call) {
 	// registration was created, and this was allowed by the dealer.
 	if reg.disclose {
 		if callee.ID == metaID {
-			details[roleCaller] = caller.ID
+			details[roleCaller] = callObj.caller.ID
 		}
-		discloseCaller(caller, details)
+		discloseCaller(callObj.caller, details)
 	} else {
 		// A Caller MAY request the disclosure of its identity (its WAMP
 		// session ID) to endpoints of a routed call.  This is indicated by the
@@ -665,17 +684,15 @@ func (d *Dealer) call(caller *session, msg *wamp.Call) {
 		if opt, _ := msg.Options[wamp.OptDiscloseMe].(bool); opt {
 			// Dealer MAY deny a Caller's request to disclose its identity.
 			if !d.allowDisclose {
-				d.trySend(caller, &wamp.Error{
+				return nil, nil, &wamp.Error{
 					Type:    msg.MessageType(),
 					Request: msg.Request,
 					Details: wamp.Dict{},
 					Error:   wamp.ErrOptionDisallowedDiscloseMe,
-				})
-				// don't continue a call when discloseMe was disallowed.
-				return
+				}
 			}
 			if callee.HasFeature(roleCallee, featureCallerIdent) {
-				discloseCaller(caller, details)
+				discloseCaller(callObj.caller, details)
 			}
 		}
 	}
@@ -694,40 +711,160 @@ func (d *Dealer) call(caller *session, msg *wamp.Call) {
 	if reg.match != wamp.MatchExact {
 		// According to the spec, a router must provide the actual
 		// procedure to the client.
-		details[wamp.OptProcedure] = msg.Procedure
+		// We also want to provide the procedure to decorator calls.
+		details[wamp.OptProcedure] = procedure
 	}
-
-	reqID := requestID{
-		session: caller.ID,
-		request: msg.Request,
+	if isDecorator {
+		details[wamp.OptDecoratedProcedure] = msg.Procedure
 	}
-	d.calls[reqID] = &call{
-		client: caller,
-	}
-	invocationID := d.idGen.Next()
-	d.invocations[invocationID] = &invocation{
-		callID: reqID,
-		callee: callee,
-	}
-	d.invocationByCall[reqID] = invocationID
-
-	// Send INVOCATION to the endpoint that has registered the requested
-	// procedure.
-	if !d.trySend(callee, &wamp.Invocation{
-		Request:      invocationID,
+	return callee, &wamp.Invocation{
+		Request:      callObj.callID,
 		Registration: reg.id,
 		Details:      details,
 		Arguments:    msg.Arguments,
 		ArgumentsKw:  msg.ArgumentsKw,
-	}) {
-		d.error(&wamp.Error{
-			Type:      wamp.INVOCATION,
-			Request:   invocationID,
+	}, nil
+}
+
+func (d *Dealer) callInt(callObj *call, msg *wamp.Call, procedure wamp.URI, isDecorator bool) *wamp.Error {
+	// perform the router processing, doing some error checks etc.
+	callee, invocation, err := d.buildInvocation(callObj, msg, procedure, isDecorator)
+	if err != nil {
+		return err
+	}
+	// Send INVOCATION to the endpoint that has registered the requested
+	// procedure.
+	if !d.trySend(callee, invocation) {
+		return &wamp.Error{
+			Type:      msg.MessageType(),
+			Request:   msg.Request,
+			Details:   wamp.Dict{},
+			Error:     wamp.ErrNetworkFailure,
+			Arguments: wamp.List{"client blocked - cannot call procedure"},
+		}
+	}
+	// store the callee we just sent the invocation to
+	callObj.currentCallee = callee
+	return nil
+}
+
+func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
+	callObj, ok := d.invocations[uniqueID]
+	if !ok {
+		// There is no call registered with this call ID, therefore `d.call` has been
+		// invoked by a client and we need to resolve the preprocess decorators and
+		// store them into the call list.
+		decorators := d.preprocessDecorators.matchDecorators(msg.Procedure)
+		callState := callStateProcessing
+		// Basically, we have two cases:
+		if len(decorators) > 0 {
+			// 1. One or more decorators were found, in this case, start by invoking the first decorator
+			//  by just constructing the CALL message and keep the reference to the old one around.
+			callState = callStatePreprocessDecorators
+		}
+
+		// 2. No decorators were found, so we skip the preprocessDecorators state and move on to
+		// the processing call state and putting a nil list into the call object.
+
+		callObj = &call{
+			caller:          caller,
+			callerRequestID: msg.Request,
+			originalCall:    msg,
+
+			callID:                   uniqueID,
+			currentState:             callState,
+			currentCallee:            nil,
+			additionalCallees:        nil,
+			currentCallMessage:       msg,
+			currentInvocationMessage: nil,
+			preProcessDecorators:     decorators,
+			preCallDecorators:        nil,
+			postCallDecorators:       nil,
+		}
+		d.invocations[uniqueID] = callObj
+		d.invocationByCall[requestID{
+			session: caller.ID,
+			request: msg.Request,
+		}] = uniqueID
+	}
+
+	if callObj.currentState == callStatePreprocessDecorators && len(callObj.preProcessDecorators) > 0 {
+		// TODO: Call the first preprocess decorator and slice it off the array.
+		if err := d.callInt(callObj, &wamp.Call{
+			Request:     callObj.callerRequestID,
+			Procedure:   callObj.originalCall.Procedure,
+			Options:     callObj.originalCall.Options,
+			Arguments:   wamp.List{callObj.currentCallMessage},
+			ArgumentsKw: wamp.Dict{},
+		}, callObj.preProcessDecorators[0].handlerURI, true); err != nil {
+			delete(d.invocations, uniqueID)
+			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
+			d.trySend(callObj.caller, err)
+		} else {
+			callObj.preProcessDecorators = callObj.preProcessDecorators[1:]
+		}
+		return
+	}
+	if callObj.currentState == callStateProcessing {
+		targetCallee, invocationMessage, errorMessage := d.buildInvocation(callObj, &wamp.Call{
+			Request:     callObj.callerRequestID,
+			Options:     callObj.currentCallMessage.Options,
+			Arguments:   callObj.currentCallMessage.Arguments,
+			ArgumentsKw: callObj.currentCallMessage.ArgumentsKw,
+			Procedure:   callObj.currentCallMessage.Procedure,
+		}, callObj.currentCallMessage.Procedure, false)
+		if errorMessage != nil {
+			delete(d.invocations, uniqueID)
+			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
+			d.trySend(callObj.caller, errorMessage)
+			return
+		}
+		callObj.currentInvocationMessage = invocationMessage
+		callObj.targetCallee = targetCallee
+		callObj.preCallDecorators = d.precallDecorators.matchDecorators(callObj.currentCallMessage.Procedure)
+		if len(callObj.preCallDecorators) > 0 {
+			callObj.currentState = callStatePrecallDecorators
+		} else {
+			callObj.currentState = callStateResult
+		}
+	}
+	if callObj.currentState == callStatePrecallDecorators && len(callObj.preCallDecorators) > 0 {
+		// TODO: Call the first precall decorator and slice it off the array.
+		// TODO: Call the first preprocess decorator and slice it off the array.
+		if err := d.callInt(callObj, &wamp.Call{
+			Request:     callObj.callerRequestID,
+			Procedure:   callObj.originalCall.Procedure,
+			Options:     callObj.originalCall.Options,
+			Arguments:   wamp.List{callObj.currentInvocationMessage},
+			ArgumentsKw: wamp.Dict{},
+		}, callObj.preCallDecorators[0].handlerURI, true); err != nil {
+			delete(d.invocations, uniqueID)
+			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
+			d.trySend(callObj.caller, err)
+		} else {
+			callObj.preCallDecorators = callObj.preCallDecorators[1:]
+		}
+		return
+	}
+
+	// If we get here, it means that for the call request,
+	// no decorator needs to be considered anymore and we can process the call.
+
+	// Send INVOCATION to the endpoint that has registered the requested
+	// procedure.
+	if !d.trySend(callObj.targetCallee, callObj.currentInvocationMessage) {
+		delete(d.invocations, uniqueID)
+		delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
+		d.trySend(callObj.caller, &wamp.Error{
+			Type:      msg.MessageType(),
+			Request:   msg.Request,
 			Details:   wamp.Dict{},
 			Error:     wamp.ErrNetworkFailure,
 			Arguments: wamp.List{"client blocked - cannot call procedure"},
 		})
 	}
+	// store the callee we just sent the invocation to
+	callObj.currentCallee = callObj.targetCallee
 }
 
 func (d *Dealer) cancel(caller *session, msg *wamp.Cancel, mode string, reason wamp.URI) {
@@ -735,54 +872,48 @@ func (d *Dealer) cancel(caller *session, msg *wamp.Cancel, mode string, reason w
 		session: caller.ID,
 		request: msg.Request,
 	}
-	procCaller, ok := d.calls[reqID]
+	callID, ok := d.invocationByCall[reqID]
 	if !ok {
+		d.log.Print("Found call with no pending invocation")
 		// There is no pending call to cancel.
+		return
+	}
+	callObj, ok := d.invocations[callID]
+	if !ok {
+		// Call object couldn't be found.
+		d.log.Print("CRITICAL: missing caller for pending invocation")
 		return
 	}
 
 	// Check if the caller of cancel is also the caller of the procedure.
-	if caller != procCaller.client {
+	if caller != callObj.caller {
 		// The caller it trying to cancel calls that it does not own.  It it
 		// either confused or trying to do something bad.
 		d.log.Println("CANCEL received from caller", caller,
 			"for call owned by different session")
 		return
 	}
-
-	// Find the pending invocation.
-	invocationID, ok := d.invocationByCall[reqID]
-	if !ok {
-		// If there is no pending invocation, ignore cancel.
-		d.log.Print("Found call with no pending invocation")
-		return
-	}
-	invk, ok := d.invocations[invocationID]
-	if !ok {
-		d.log.Print("CRITICAL: missing caller for pending invocation")
-		return
-	}
 	// For those who repeatedly press elevator buttons.
-	if invk.canceled {
+	if callObj.canceled {
 		return
 	}
-	invk.canceled = true
+	callObj.canceled = true
 
 	// If mode is "kill" or "killnowait", then send INTERRUPT.
 	if mode != wamp.CancelModeSkip {
 		// Check that callee supports call canceling to see if it is alright to
 		// send INTERRUPT to callee.
-		if !invk.callee.HasFeature(roleCallee, featureCallCanceling) {
+		if !callObj.currentCallee.HasFeature(roleCallee, featureCallCanceling) {
 			// Cancel in dealer without sending INTERRUPT to callee.
-			d.log.Println("Callee", invk.callee, "does not support call canceling")
+			d.log.Println("Callee", callObj.currentCallee, "does not support call canceling")
 		} else {
 			// Send INTERRUPT message to callee.
-			if d.trySend(invk.callee, &wamp.Interrupt{
-				Request: invocationID,
+			if d.trySend(callObj.currentCallee, &wamp.Interrupt{
+				Request: callObj.callID,
 				Options: wamp.Dict{wamp.OptReason: reason, wamp.OptMode: mode},
 			}) {
 				d.log.Println("Dealer sent INTERRUPT to cancel invocation",
-					invocationID, "for call", msg.Request, "mode:", mode)
+					callObj.callID, "for call", msg.Request, "mode:", mode)
 
 				// If mode is "kill" then let error from callee trigger the
 				// response to the caller.  This is how the caller waits for
@@ -800,9 +931,8 @@ func (d *Dealer) cancel(caller *session, msg *wamp.Cancel, mode string, reason w
 	// callee to be dropped.
 	//
 	// This also stops repeated CANCEL messages.
-	delete(d.calls, reqID)
 	delete(d.invocationByCall, reqID)
-	delete(d.invocations, invocationID)
+	delete(d.invocations, callObj.callID)
 
 	// Send error to the caller.
 	d.trySend(caller, &wamp.Error{
@@ -817,7 +947,11 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 	progress, _ := msg.Options[wamp.OptProgress].(bool)
 
 	// Find and delete pending invocation.
-	invk, ok := d.invocations[msg.Request]
+	callObj, ok := d.invocations[msg.Request]
+	if callObj.currentCallee != callee {
+		d.log.Println("Dealer received YIELD from not-owned callee", callee, ", ignoring")
+		return
+	}
 	if !ok {
 		// The pending invocation is gone, which means the caller has left the
 		// realm or canceled the call.

@@ -6,19 +6,20 @@ type DecoratorType string
 // Consts for message options and option values.
 const (
 	// Message option keywords.
-	OptAcknowledge     = "acknowledge"
-	OptDiscloseCaller  = "disclose_caller"
-	OptDiscloseMe      = "disclose_me"
-	OptError           = "error"
-	OptExcludeMe       = "exclude_me"
-	OptInvoke          = "invoke"
-	OptMatch           = "match"
-	OptMode            = "mode"
-	OptProcedure       = "procedure"
-	OptProgress        = "progress"
-	OptReason          = "reason"
-	OptReceiveProgress = "receive_progress"
-	OptTimeout         = "timeout"
+	OptAcknowledge        = "acknowledge"
+	OptDiscloseCaller     = "disclose_caller"
+	OptDiscloseMe         = "disclose_me"
+	OptError              = "error"
+	OptExcludeMe          = "exclude_me"
+	OptInvoke             = "invoke"
+	OptMatch              = "match"
+	OptMode               = "mode"
+	OptProcedure          = "procedure"
+	OptDecoratedProcedure = "decorated_procedure"
+	OptProgress           = "progress"
+	OptReason             = "reason"
+	OptReceiveProgress    = "receive_progress"
+	OptTimeout            = "timeout"
 
 	// Values for URI matching mode.
 	MatchExact    = "exact"
