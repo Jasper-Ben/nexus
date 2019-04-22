@@ -109,9 +109,6 @@ type realm struct {
 	metaProcMap map[wamp.ID]func(*wamp.Invocation) wamp.Message
 	metaDone    chan struct{}
 
-	// Decorators
-	decorators map[wamp.ID]*Decorator
-
 	closed    bool
 	closeLock sync.Mutex
 

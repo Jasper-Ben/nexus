@@ -173,7 +173,7 @@ func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 	}
 
 	r.log.Printf("Removing Decorator with ID %v", decoratorID)
-	delete(r.decorators, decoratorID)
+	//delete(r.decorators, decoratorID)
 
 	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorID}}
 }

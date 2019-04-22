@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gammazero/nexus/stdlog"
+	"github.com/gammazero/nexus/transport/serialize"
 	"github.com/gammazero/nexus/wamp"
 )
 
@@ -802,6 +803,9 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			d.trySend(callObj.caller, err)
 		} else {
 			callObj.preProcessDecorators = callObj.preProcessDecorators[1:]
+			if len(callObj.preProcessDecorators) == 0 {
+				callObj.currentState = callStateProcessing
+			}
 		}
 		return
 	}
@@ -843,6 +847,9 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			d.trySend(callObj.caller, err)
 		} else {
 			callObj.preCallDecorators = callObj.preCallDecorators[1:]
+			if len(callObj.preCallDecorators) == 0 {
+				callObj.currentState = callStateResult
+			}
 		}
 		return
 	}
@@ -943,6 +950,21 @@ func (d *Dealer) cancel(caller *session, msg *wamp.Cancel, mode string, reason w
 	})
 }
 
+func getMessage(args wamp.List, msgKind wamp.MessageType) wamp.Message {
+	if len(args) == 0 {
+		return nil
+	}
+	list, ok := wamp.AsList(args[0])
+	if !ok {
+		return nil
+	}
+	cmsg, err := serialize.ListToWampMessage(msgKind, list)
+	if err != nil {
+		return nil
+	}
+	return cmsg
+}
+
 func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 	progress, _ := msg.Options[wamp.OptProgress].(bool)
 
@@ -978,8 +1000,30 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 		d.log.Println("Dealer received YIELD from not-owned callee", callee, ", ignoring")
 		return
 	}
+	if callObj.currentState != callStateResult && progress {
+		d.log.Println("Dropping progressive result for preprocess or precall decorator, not supported")
+		return
+	}
 
-	// TBD: Decorator results.
+	switch callObj.currentState {
+	case callStatePreprocessDecorators:
+		// preprocess decorator returned a result.
+		callObj.currentCallee = nil
+		decoratedCall := getMessage(msg.Arguments, wamp.CALL)
+		if decoratedCall != nil {
+			callObj.currentCallMessage = decoratedCall.(*wamp.Call)
+		}
+		d.call(callObj.caller, callObj.currentCallMessage, callObj.callID)
+		return
+	case callStatePrecallDecorators:
+		callObj.currentCallee = nil
+		decoratedInvocation := getMessage(msg.Arguments, wamp.INVOCATION)
+		if decoratedInvocation != nil {
+			callObj.currentInvocationMessage = decoratedInvocation.(*wamp.Invocation)
+		}
+		d.call(callObj.caller, callObj.currentCallMessage, callObj.callID)
+		return
+	}
 
 	details := wamp.Dict{}
 

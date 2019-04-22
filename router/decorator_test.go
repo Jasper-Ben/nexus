@@ -1,10 +1,11 @@
 package router
 
 import (
-	"github.com/fortytw2/leaktest"
-	"github.com/gammazero/nexus/wamp"
 	"testing"
 	"time"
+
+	"github.com/fortytw2/leaktest"
+	"github.com/gammazero/nexus/wamp"
 )
 
 func TestDecorator(t *testing.T) {
@@ -12,6 +13,24 @@ func TestDecorator(t *testing.T) {
 
 	r, _ := newTestRouter()
 	defer r.Close()
+
+	decoratorCallee, _ := testClient(r)
+	regID := wamp.GlobalID()
+	_ = decoratorCallee.Send(&wamp.Register{
+		Request:   regID,
+		Procedure: "decoratortest.handlerURI",
+	})
+	registered, err := wamp.RecvTimeout(decoratorCallee, time.Second)
+	if err != nil {
+		t.Error("failed to register, ", err)
+		return
+	}
+	registerMessage, ok := registered.(*wamp.Registered)
+	if !ok {
+		t.Error("Router responded with: ", registered)
+	}
+	regID = registerMessage.Registration
+	t.Log("Registered decorator function with regID:", regID)
 
 	caller, _ := testClient(r)
 	callID := wamp.GlobalID()
