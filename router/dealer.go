@@ -362,12 +362,12 @@ func (d *Dealer) Yield(callee *session, msg *wamp.Yield) {
 }
 
 // Error handles an invocation error returned by the callee.
-func (d *Dealer) Error(msg *wamp.Error) {
+func (d *Dealer) Error(origin *session, msg *wamp.Error) {
 	if msg == nil {
 		panic("dealer.Error with nil message")
 	}
 	d.actionChan <- func() {
-		d.error(msg)
+		d.error(origin, msg)
 	}
 }
 
@@ -948,10 +948,6 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 
 	// Find and delete pending invocation.
 	callObj, ok := d.invocations[msg.Request]
-	if callObj.currentCallee != callee {
-		d.log.Println("Dealer received YIELD from not-owned callee", callee, ", ignoring")
-		return
-	}
 	if !ok {
 		// The pending invocation is gone, which means the caller has left the
 		// realm or canceled the call.
@@ -977,69 +973,60 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 		}
 		return
 	}
-	callID := invk.callID
-	// Find caller for this result.
-	caller, ok := d.calls[callID]
+
+	if callObj.currentCallee.ID != callee.ID {
+		d.log.Println("Dealer received YIELD from not-owned callee", callee, ", ignoring")
+		return
+	}
+
+	// TBD: Decorator results.
 
 	details := wamp.Dict{}
 
 	if !progress {
-		delete(d.invocations, msg.Request)
 		// Delete callID -> invocation.
-		delete(d.invocationByCall, callID)
-		// Delete pending call since it is finished.
-		delete(d.calls, callID)
+		delete(d.invocations, callObj.callID)
+		delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
 	} else {
 		// If this is a progressive response, then set progress=true.
 		details[wamp.OptProgress] = true
 	}
 
-	// Did not find caller.
-	if !ok {
-		// Found invocation id that does not have any call id.
-		d.log.Println("!!! No matching caller for invocation from YIELD:",
-			msg.Request)
-		return
-	}
-
 	// Send RESULT to the caller.  This forwards the YIELD from the callee.
-	d.trySend(caller.client, &wamp.Result{
-		Request:     callID.request,
+	d.trySend(callObj.caller, &wamp.Result{
+		Request:     callObj.callerRequestID,
 		Details:     details,
 		Arguments:   msg.Arguments,
 		ArgumentsKw: msg.ArgumentsKw,
 	})
 }
 
-func (d *Dealer) error(msg *wamp.Error) {
+func (d *Dealer) error(origin *session, msg *wamp.Error) {
+	// When we receive an error for an invocation it could be either from a decorator
+	// or from the endpoint.
+	// Which in both cases means that we want to forward the error to the client.
 	// Find and delete pending invocation.
-	invk, ok := d.invocations[msg.Request]
+	callObj, ok := d.invocations[msg.Request]
 	if !ok {
 		d.log.Println("Received ERROR (INVOCATION) with invalid request ID:",
 			msg.Request, "(response to canceled call)")
 		return
 	}
-	delete(d.invocations, msg.Request)
-	callID := invk.callID
+
+	if callObj.currentCallee.ID != origin.ID {
+		d.log.Println("Dealer received ERROR from not-owned callee", origin, ", ignoring")
+		return
+	}
 
 	// Delete invocationsByCall entry.  This will already be deleted if the
 	// call canceled with mode "skip" or "killnowait".
-	delete(d.invocationByCall, callID)
-
-	// Find and delete pending call.  This will already be deleted if the
-	// call canceled with mode "skip" or "killnowait".
-	caller, ok := d.calls[callID]
-	if !ok {
-		d.log.Println("Received ERROR for call that was already canceled:",
-			callID)
-		return
-	}
-	delete(d.calls, callID)
+	delete(d.invocations, callObj.callID)
+	delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
 
 	// Send error to the caller.
-	d.trySend(caller.client, &wamp.Error{
+	d.trySend(callObj.caller, &wamp.Error{
 		Type:        wamp.CALL,
-		Request:     callID.request,
+		Request:     callObj.callerRequestID,
 		Error:       msg.Error,
 		Details:     msg.Details,
 		Arguments:   msg.Arguments,
@@ -1081,19 +1068,13 @@ func (d *Dealer) removeSession(sess *session) {
 		})
 	}
 	delete(d.calleeRegIDSet, sess)
+	for callID, callObj := range d.invocations {
+		if callObj.currentCallee == sess {
 
-	// Remove any pending calls for the removed session.
-	for req, caller := range d.calls {
-		if caller.client != sess {
-			continue
 		}
-		// Removed session has pending call.
-		delete(d.calls, req)
-
-		// If there is a pending invocation for the call, remove it.
-		if invkID, ok := d.invocationByCall[req]; ok {
-			delete(d.invocationByCall, req)
-			delete(d.invocations, invkID)
+		if callObj.caller == sess || callObj.currentCallee == sess {
+			delete(d.invocations, callID)
+			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
 		}
 	}
 }

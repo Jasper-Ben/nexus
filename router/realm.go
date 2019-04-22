@@ -549,7 +549,7 @@ func (r *realm) handleInboundMessages(sess *session, stopChan <-chan struct{}) (
 			if msg.Type != wamp.INVOCATION {
 				return false, false, fmt.Errorf("invalid ERROR received: %v", msg)
 			}
-			r.dealer.Error(msg)
+			r.dealer.Error(sess, msg)
 
 		case *wamp.Goodbye:
 			// Handle client leaving realm.

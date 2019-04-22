@@ -217,7 +217,7 @@ func TestBasicCall(t *testing.T) {
 	inv = rsp.(*wamp.Invocation)
 
 	// Callee responds with a ERROR message
-	dealer.Error(&wamp.Error{Request: inv.Request})
+	dealer.Error(calleeSess, &wamp.Error{Request: inv.Request})
 
 	// Check that caller received an ERROR message.
 	rsp = <-caller.Recv()
@@ -339,7 +339,7 @@ func TestCancelCallModeKill(t *testing.T) {
 	}
 
 	// callee responds with ERROR message
-	dealer.Error(&wamp.Error{
+	dealer.Error(calleeSess, &wamp.Error{
 		Type:    wamp.INVOCATION,
 		Request: inv.Request,
 		Error:   wamp.ErrCanceled,
@@ -420,7 +420,7 @@ func TestCancelCallModeKillNoWait(t *testing.T) {
 	}
 
 	// callee responds with ERROR message
-	dealer.Error(&wamp.Error{
+	dealer.Error(calleeSess, &wamp.Error{
 		Type:    wamp.INVOCATION,
 		Request: inv.Request,
 		Error:   wamp.ErrCanceled,
