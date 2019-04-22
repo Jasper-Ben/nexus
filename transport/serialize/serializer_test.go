@@ -275,7 +275,7 @@ func TestAssignSlice(t *testing.T) {
 	// Deserializing a slice into a message.
 	elems := wamp.List{msgType, 123, wamp.Dict{},
 		"some.valid.topic", pubArgs}
-	msg, err := listToMsg(msgType, elems)
+	msg, err := ListToWampMessage(msgType, elems)
 	if err != nil {
 		t.Fatal(err)
 	}

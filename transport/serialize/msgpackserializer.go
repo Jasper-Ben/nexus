@@ -48,5 +48,5 @@ func (s *MessagePackSerializer) Deserialize(data []byte) (wamp.Message, error) {
 	if !ok {
 		return nil, errors.New("unsupported message format")
 	}
-	return listToMsg(wamp.MessageType(typ), v)
+	return ListToWampMessage(wamp.MessageType(typ), v)
 }

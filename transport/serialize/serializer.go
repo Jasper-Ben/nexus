@@ -33,9 +33,9 @@ type Serializer interface {
 	Deserialize([]byte) (wamp.Message, error)
 }
 
-// listToMessage takes a list of values from a WAMP message and populates the
+// ListToWampMessage takes a list of values from a WAMP message and populates the
 // fields of a message type.
-func listToMsg(msgType wamp.MessageType, vlist []interface{}) (wamp.Message, error) {
+func ListToWampMessage(msgType wamp.MessageType, vlist []interface{}) (wamp.Message, error) {
 	msg := wamp.NewMessage(msgType)
 	if msg == nil {
 		return nil, errors.New("unsupported message type")
