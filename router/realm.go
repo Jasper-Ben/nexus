@@ -78,6 +78,13 @@ type testamentBucket struct {
 	destroyed []testament
 }
 
+type decoratorBucket struct {
+	owner    wamp.ID
+	kind     wamp.DecoratorType
+	match    string
+	matchURI wamp.URI
+}
+
 // A Realm is a WAMP routing and administrative domain, optionally protected by
 // authentication and authorization.  WAMP messages are only routed within a
 // Realm.
@@ -94,6 +101,8 @@ type realm struct {
 	clients map[wamp.ID]*session
 	// session ID -> testament
 	testaments map[wamp.ID]testamentBucket
+	decorators map[wamp.ID]decoratorBucket
+
 	clientStop chan struct{}
 
 	metaPeer  wamp.Peer
@@ -138,6 +147,7 @@ func newRealm(config *RealmConfig, broker *Broker, dealer *Dealer, logger stdlog
 		authorizer:  config.Authorizer,
 		clients:     map[wamp.ID]*session{},
 		testaments:  map[wamp.ID]testamentBucket{},
+		decorators:  map[wamp.ID]decoratorBucket{},
 		clientStop:  make(chan struct{}),
 		actionChan:  make(chan func()),
 		metaIDGen:   new(wamp.IDGen),

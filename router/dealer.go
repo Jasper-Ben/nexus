@@ -1025,10 +1025,6 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 		}
 		return
 	}
-	if callObj.dropResult {
-		delete(d.invocations, msg.Request)
-		return
-	}
 
 	if callObj.currentCallee.ID != callee.ID {
 		d.log.Println("Dealer received YIELD from not-owned callee", callee, ", ignoring")
@@ -1036,6 +1032,10 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 	}
 	if callObj.currentState != callStateResult && progress {
 		d.log.Println("Dropping progressive result for preprocess or precall decorator, not supported")
+		return
+	}
+	if callObj.dropResult {
+		delete(d.invocations, msg.Request)
 		return
 	}
 
@@ -1059,24 +1059,26 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 		return
 	}
 
-	details := wamp.Dict{}
+	if len(callObj.postCallDecorators) == 0 {
+		// we don't have postCall decorators, so just pass the result to the clients.
+		details := wamp.Dict{}
+		if !progress {
+			// Delete callID -> invocation.
+			delete(d.invocations, callObj.callID)
+			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
+		} else {
+			// If this is a progressive response, then set progress=true.
+			details[wamp.OptProgress] = true
+		}
 
-	if !progress {
-		// Delete callID -> invocation.
-		delete(d.invocations, callObj.callID)
-		delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
-	} else {
-		// If this is a progressive response, then set progress=true.
-		details[wamp.OptProgress] = true
+		// Send RESULT to the caller.  This forwards the YIELD from the callee.
+		d.trySend(callObj.caller, &wamp.Result{
+			Request:     callObj.callerRequestID,
+			Details:     details,
+			Arguments:   msg.Arguments,
+			ArgumentsKw: msg.ArgumentsKw,
+		})
 	}
-
-	// Send RESULT to the caller.  This forwards the YIELD from the callee.
-	d.trySend(callObj.caller, &wamp.Result{
-		Request:     callObj.callerRequestID,
-		Details:     details,
-		Arguments:   msg.Arguments,
-		ArgumentsKw: msg.ArgumentsKw,
-	})
 }
 
 func (d *Dealer) error(origin *session, msg *wamp.Error) {
@@ -1096,6 +1098,11 @@ func (d *Dealer) error(origin *session, msg *wamp.Error) {
 		return
 	}
 
+	if callObj.currentState == callStateResult && len(callObj.postCallDecorators) > 0 {
+		// We have got the error-result from the client and need to decorate them
+		// Therefore we can't drop the result here.
+		return
+	}
 	// Delete invocationsByCall entry.  This will already be deleted if the
 	// call canceled with mode "skip" or "killnowait".
 	delete(d.invocations, callObj.callID)

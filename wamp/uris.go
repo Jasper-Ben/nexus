@@ -26,6 +26,10 @@ const (
 	// is not active.
 	ErrNoSuchSubscription = URI("wamp.error.no_such_subscription")
 
+	// A Realm could not perform a decorator delete request, since the given decorator
+	// does not exist
+	ErrNoSuchDecorator = URI("wamp.error.no_such_decorator")
+
 	// A call failed, since the given argument types or values are not
 	// acceptable to the called procedure - in which case the Callee may throw
 	// this error.  Or a Router performing payload validation checked the
@@ -228,7 +232,6 @@ const (
 	// Remove the Testaments for that Session, either for when it is detached
 	// or destroyed.
 	MetaProcSessionFlushTestaments = URI("wamp.session.flush_testaments")
-
 
 	// -- Decorator Meta Procedures --
 

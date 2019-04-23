@@ -48,12 +48,14 @@ type Decorator struct {
 	order      int64
 	callType   wamp.DecoratorCallType
 	id         wamp.ID
+	owner      wamp.ID
 }
 
 func (r *realm) NewDecorator(
 	handlerURI wamp.URI,
 	order int64,
 	callType wamp.DecoratorCallType,
+	sid wamp.ID,
 ) (*Decorator, wamp.URI) {
 
 	// check whether the handler is a valid and registered procedure.
@@ -67,6 +69,7 @@ func (r *realm) NewDecorator(
 		order,
 		callType,
 		wamp.GlobalID(),
+		sid,
 	}
 
 	return &createdDecorator, ""
@@ -77,6 +80,11 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 	r.log.Print("AddDecoratorHandler called")
 
 	decoratorKind, isOk := wamp.AsString(msg.Arguments[0])
+	if !isOk {
+		return makeError(msg.Request, wamp.ErrInvalidArgument)
+	}
+
+	sid, isOk := wamp.AsID(msg.Details["caller"])
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
@@ -127,7 +135,7 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
 
-	createdDecorator, errURI := r.NewDecorator(handlerURI, order, callType)
+	createdDecorator, errURI := r.NewDecorator(handlerURI, order, callType, sid)
 
 	// TODO: Think about empty string as empty wamp uri.
 	if errURI != "" {
@@ -160,20 +168,86 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 		done <- true
 	}
 	<-done
+	r.decorators[createdDecorator.id] = decoratorBucket{
+		owner:    sid,
+		kind:     wamp.DecoratorType(decoratorKind),
+		match:    matchType,
+		matchURI: matchURI,
+	}
 
 	r.log.Printf("Created and regstered decorator with ID %v", createdDecorator.id)
 	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{createdDecorator.id}}
 }
 
 func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
-
 	decoratorID, isOk := wamp.AsID(msg.Arguments[0])
 	if !isOk {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
+	ownerID, isOk := wamp.AsID(msg.Details["caller"])
+	if !isOk {
+		return makeError(msg.Request, wamp.ErrInvalidArgument)
+	}
+
+	decorator, ok := r.decorators[decoratorID]
+	if !ok {
+		return makeError(msg.Request, wamp.ErrNoSuchDecorator)
+	}
+
+	if decorator.owner != ownerID {
+		return makeError(msg.Request, wamp.ErrNotAuthorized)
+	}
 
 	r.log.Printf("Removing Decorator with ID %v", decoratorID)
-	//delete(r.decorators, decoratorID)
+	delete(r.decorators, decoratorID)
 
-	return &wamp.Yield{Request: msg.Request, Arguments: wamp.List{decoratorID}}
+	var syncChan chan func()
+	var targetMap *decoratorMap
+	doneChan := make(chan bool)
+	switch decorator.kind {
+	case wamp.DecoratorTypeEvent:
+		syncChan = r.broker.actionChan
+		targetMap = r.broker.eventDecorators
+	case wamp.DecoratorTypePublish:
+		syncChan = r.broker.actionChan
+		targetMap = r.broker.publishDecorators
+	case wamp.DecoratorTypePreprocess:
+		syncChan = r.dealer.actionChan
+		targetMap = r.dealer.preprocessDecorators
+	case wamp.DecoratorTypePrecall:
+		syncChan = r.dealer.actionChan
+		targetMap = r.dealer.precallDecorators
+	case wamp.DecoratorTypePostcall:
+		syncChan = r.dealer.actionChan
+		targetMap = r.dealer.postcallDecorators
+	}
+
+	syncChan <- func() {
+		var decoratorLookup map[wamp.URI][]*Decorator
+		switch decorator.match {
+		case wamp.MatchExact:
+			decoratorLookup = targetMap.exactMatch
+		case wamp.MatchPrefix:
+			decoratorLookup = targetMap.prefixMatch
+		case wamp.MatchWildcard:
+			decoratorLookup = targetMap.wildcardMatch
+		}
+		decoratorList := decoratorLookup[decorator.matchURI]
+		for i, storedDecorator := range decoratorList {
+			if storedDecorator.id == decoratorID {
+				decoratorList = append(decoratorList[:i], decoratorList[i+1:]...)
+				break
+			}
+		}
+
+		if len(decoratorList) == 0 {
+			delete(decoratorLookup, decorator.matchURI)
+		} else {
+			decoratorLookup[decorator.matchURI] = decoratorList
+		}
+		doneChan <- true
+	}
+	<-doneChan
+
+	return &wamp.Yield{Request: msg.Request}
 }
