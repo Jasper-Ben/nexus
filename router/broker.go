@@ -481,7 +481,7 @@ func allowPublish(sub *session, filter PublishFilter) bool {
 // pubEvent sends an event to all subscribers that are not excluded from
 // receiving the event.
 func (b *Broker) pubEvent(pub *session, msg *wamp.Publish, pubID wamp.ID, sub *subscription, excludePublisher, sendTopic, disclose bool, filter PublishFilter) {
-	for subscriber, _ := range sub.subscribers {
+	for subscriber := range sub.subscribers {
 		// Do not send event to publisher.
 		if subscriber == pub && excludePublisher {
 			continue

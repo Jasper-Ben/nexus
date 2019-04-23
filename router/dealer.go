@@ -99,9 +99,9 @@ type call struct {
 	// TBD: Evaluate whether we want to keep the original invocation message.
 	currentInvocationMessage *wamp.Invocation
 
-	preProcessDecorators []*Decorator
-	preCallDecorators    []*Decorator
-	postCallDecorators   []*Decorator
+	preProcessDecorators []*decorator
+	preCallDecorators    []*decorator
+	postCallDecorators   []*decorator
 }
 
 type requestID struct {

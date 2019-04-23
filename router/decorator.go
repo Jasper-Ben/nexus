@@ -7,13 +7,13 @@ import (
 )
 
 type decoratorMap struct {
-	prefixMatch   map[wamp.URI][]*Decorator
-	wildcardMatch map[wamp.URI][]*Decorator
-	exactMatch    map[wamp.URI][]*Decorator
+	prefixMatch   map[wamp.URI][]*decorator
+	wildcardMatch map[wamp.URI][]*decorator
+	exactMatch    map[wamp.URI][]*decorator
 }
 
-func (dm *decoratorMap) matchDecorators(procedure wamp.URI) []*Decorator {
-	decorators := []*Decorator{}
+func (dm *decoratorMap) matchDecorators(procedure wamp.URI) []*decorator {
+	decorators := []*decorator{}
 
 	exactList := dm.exactMatch[procedure]
 	decorators = append(decorators, exactList...)
@@ -37,13 +37,13 @@ func (dm *decoratorMap) matchDecorators(procedure wamp.URI) []*Decorator {
 
 func newDecoratorMap() *decoratorMap {
 	return &decoratorMap{
-		prefixMatch:   make(map[wamp.URI][]*Decorator),
-		wildcardMatch: make(map[wamp.URI][]*Decorator),
-		exactMatch:    make(map[wamp.URI][]*Decorator),
+		prefixMatch:   make(map[wamp.URI][]*decorator),
+		wildcardMatch: make(map[wamp.URI][]*decorator),
+		exactMatch:    make(map[wamp.URI][]*decorator),
 	}
 }
 
-type Decorator struct {
+type decorator struct {
 	handlerURI wamp.URI
 	order      int64
 	callType   wamp.DecoratorCallType
@@ -56,7 +56,7 @@ func (r *realm) NewDecorator(
 	order int64,
 	callType wamp.DecoratorCallType,
 	sid wamp.ID,
-) (*Decorator, wamp.URI) {
+) (*decorator, wamp.URI) {
 
 	// check whether the handler is a valid and registered procedure.
 	_, hasRegistration := r.dealer.matchProcedure(handlerURI)
@@ -64,15 +64,13 @@ func (r *realm) NewDecorator(
 		return nil, wamp.ErrNoSuchProcedure
 	}
 
-	createdDecorator := Decorator{
+	return &decorator{
 		handlerURI,
 		order,
 		callType,
 		wamp.GlobalID(),
 		sid,
-	}
-
-	return &createdDecorator, ""
+	}, ""
 }
 
 func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
@@ -152,7 +150,7 @@ func (r *realm) AddDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 	}
 	done := make(chan bool)
 	syncChan <- func() {
-		var target map[wamp.URI][]*Decorator
+		var target map[wamp.URI][]*decorator
 		switch matchType {
 		case wamp.MatchPrefix:
 			target = dm.prefixMatch
@@ -189,12 +187,12 @@ func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 		return makeError(msg.Request, wamp.ErrInvalidArgument)
 	}
 
-	decorator, ok := r.decorators[decoratorID]
+	readDecorator, ok := r.decorators[decoratorID]
 	if !ok {
 		return makeError(msg.Request, wamp.ErrNoSuchDecorator)
 	}
 
-	if decorator.owner != ownerID {
+	if readDecorator.owner != ownerID {
 		return makeError(msg.Request, wamp.ErrNotAuthorized)
 	}
 
@@ -204,7 +202,7 @@ func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 	var syncChan chan func()
 	var targetMap *decoratorMap
 	doneChan := make(chan bool)
-	switch decorator.kind {
+	switch readDecorator.kind {
 	case wamp.DecoratorTypeEvent:
 		syncChan = r.broker.actionChan
 		targetMap = r.broker.eventDecorators
@@ -223,8 +221,8 @@ func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 	}
 
 	syncChan <- func() {
-		var decoratorLookup map[wamp.URI][]*Decorator
-		switch decorator.match {
+		var decoratorLookup map[wamp.URI][]*decorator
+		switch readDecorator.match {
 		case wamp.MatchExact:
 			decoratorLookup = targetMap.exactMatch
 		case wamp.MatchPrefix:
@@ -232,7 +230,7 @@ func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 		case wamp.MatchWildcard:
 			decoratorLookup = targetMap.wildcardMatch
 		}
-		decoratorList := decoratorLookup[decorator.matchURI]
+		decoratorList := decoratorLookup[readDecorator.matchURI]
 		for i, storedDecorator := range decoratorList {
 			if storedDecorator.id == decoratorID {
 				decoratorList = append(decoratorList[:i], decoratorList[i+1:]...)
@@ -241,9 +239,9 @@ func (r *realm) RemoveDecoratorHandler(msg *wamp.Invocation) wamp.Message {
 		}
 
 		if len(decoratorList) == 0 {
-			delete(decoratorLookup, decorator.matchURI)
+			delete(decoratorLookup, readDecorator.matchURI)
 		} else {
-			decoratorLookup[decorator.matchURI] = decoratorList
+			decoratorLookup[readDecorator.matchURI] = decoratorList
 		}
 		doneChan <- true
 	}
