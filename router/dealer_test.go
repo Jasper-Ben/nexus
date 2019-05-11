@@ -17,6 +17,13 @@ func newTestDealer() (*Dealer, wamp.Peer) {
 	return d, metaClient
 }
 
+func newTestDealerStrict() (*Dealer, wamp.Peer) {
+	d := NewDealer(logger, true, false, debug)
+	metaClient, rtr := transport.LinkedPeers()
+	d.SetMetaPeer(rtr)
+	return d, metaClient
+}
+
 func checkMetaReg(metaClient wamp.Peer, sessID wamp.ID) error {
 	select {
 	case <-time.After(time.Second):
@@ -93,6 +100,36 @@ func TestBasicRegister(t *testing.T) {
 	if errMsg.Details == nil {
 		t.Error("missing expected error details")
 	}
+
+	// Register procedure with invalid URI (strictURI).
+	dealerStrict, _ := newTestDealerStrict()
+	dealerStrict.Register(sess, &wamp.Register{Request: 789, Procedure: testProcedureInv})
+	rsp = <-callee.Recv()
+	errMsg = rsp.(*wamp.Error)
+	if errMsg.Error != wamp.ErrInvalidURI {
+		t.Error("expected error:", wamp.ErrInvalidURI)
+	}
+
+	// Register disallowed procedure starting with "wamp.".
+	dealer.Register(sess, &wamp.Register{Request: 890, Procedure: testProcedureWamp})
+	rsp = <-callee.Recv()
+	errMsg = rsp.(*wamp.Error)
+	if errMsg.Error != wamp.ErrInvalidURI {
+		t.Error("expected error:", wamp.ErrInvalidURI)
+	}
+
+	// Request disclosure by untrusted client.
+	sessDC := newSession(callee, 0, nil)
+	dealerStrict.Register(sessDC, &wamp.Register{Request: 891, Procedure: testProcedure, Options: wamp.Dict{"disclose_caller": true}})
+	rsp = <-callee.Recv()
+	errMsg = rsp.(*wamp.Error)
+	if errMsg.Error != wamp.ErrOptionDisallowedDiscloseMe {
+		t.Error("expected error:", wamp.ErrOptionDisallowedDiscloseMe)
+	}
+	if errMsg.Details == nil {
+		t.Error("missing expected error details")
+	}
+
 }
 
 func TestUnregister(t *testing.T) {
@@ -142,6 +179,17 @@ func TestUnregister(t *testing.T) {
 	_, ok = dealer.registrations[regID]
 	if ok {
 		t.Fatal("dealer still has regID -> registration")
+	}
+
+	// Unregister a non-existent procedure.
+	dealer.Unregister(sess, &wamp.Unregister{Request: 124, Registration: regID})
+	rsp = <-callee.Recv()
+	errMsg := rsp.(*wamp.Error)
+	if errMsg.Error != wamp.ErrNoSuchRegistration {
+		t.Error("expected error:", wamp.ErrNoSuchRegistration)
+	}
+	if errMsg.Details == nil {
+		t.Error("missing expected error details")
 	}
 }
 
@@ -282,6 +330,70 @@ func TestRemovePeer(t *testing.T) {
 
 // ----- WAMP v.2 Testing -----
 
+func TestPreProcessDecorator(t *testing.T) {
+	dealer, _ := newTestDealer()
+	callee := newTestPeer()
+	calleeSess := newSession(callee, 0, nil)
+	// Register target URI
+	dealer.Register(calleeSess, &wamp.Register{
+		Request:   123,
+		Procedure: "decoratortest.handlerURI",
+	})
+	rsp := <-callee.Recv()
+	_, ok := rsp.(*wamp.Registered)
+	if !ok {
+		t.Fatal("did not receive REGISTERED response")
+	}
+
+	dealer.Register(calleeSess, &wamp.Register{
+		Request:   124,
+		Procedure: testProcedureDC,
+	})
+	rsp = <-callee.Recv()
+	_, ok = rsp.(*wamp.Registered)
+	if !ok {
+		t.Fatal("did not receive REGISTERED response")
+	}
+
+	// Add Decorator
+	dealer.Call(calleeSess, &wamp.Call{
+		Request:   124,
+		Procedure: wamp.MetaProcDecoratorAdd,
+		Arguments: wamp.List{
+			"preprocess",
+			"foo.test.bar",
+			"exact",
+			"decoratortest.handlerURI",
+			0,
+			"sync",
+		},
+	})
+	//callee.Send(&wamp.Call{
+	//	Request:   124,
+	//	Procedure: wamp.MetaProcDecoratorAdd,
+	//	Arguments: wamp.List{
+	//		"preprocess",
+	//		"foo.test.bar",
+	//		"exact",
+	//		"decoratortest.handlerURI",
+	//		0,
+	//		"sync",
+	//	},
+	//})
+	rsp = <-callee.Recv()
+	errorMsg, _ := rsp.(*wamp.Error)
+	t.Fatal("FIXME: ", errorMsg)
+
+	//caller := newTestPeer()
+	//callerSession := newSession(caller, 0, nil)
+	dealer.Call(calleeSess, &wamp.Call{Request: 125, Procedure: testProcedureDC})
+	rsp = <-callee.Recv()
+	_, ok = rsp.(*wamp.Invocation)
+	if !ok {
+		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
+	}
+}
+
 func TestCancelCallModeKill(t *testing.T) {
 	dealer, metaClient := newTestDealer()
 
@@ -290,6 +402,17 @@ func TestCancelCallModeKill(t *testing.T) {
 			"callee": wamp.Dict{
 				"features": wamp.Dict{
 					"call_canceling": true,
+				},
+			},
+		},
+	}
+
+	calleeRolesNoCancel := wamp.Dict{
+		"roles": wamp.Dict{
+			"callee": wamp.Dict{
+				"features": wamp.Dict{
+					"progressive_call_results": true,
+					"call_canceling":           false,
 				},
 			},
 		},
@@ -324,8 +447,17 @@ func TestCancelCallModeKill(t *testing.T) {
 		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
 	}
 
+	// Test caller cancelling call. mode=invalid
+	opts := wamp.SetOption(nil, "mode", "killnow")
+	dealer.Cancel(callerSession, &wamp.Cancel{Request: 125, Options: opts})
+	rsp = <-caller.Recv()
+	errMsg := rsp.(*wamp.Error)
+	if errMsg.Error != wamp.ErrInvalidArgument {
+		t.Error("expected error:", wamp.ErrInvalidArgument)
+	}
+
 	// Test caller cancelling call. mode=kill
-	opts := wamp.SetOption(nil, "mode", "kill")
+	opts = wamp.SetOption(nil, "mode", "kill")
 	dealer.Cancel(callerSession, &wamp.Cancel{Request: 125, Options: opts})
 
 	// callee should receive an INTERRUPT request
@@ -361,6 +493,10 @@ func TestCancelCallModeKill(t *testing.T) {
 	if s, _ := wamp.AsString(rslt.Details["reason"]); s != "callee canceled" {
 		t.Fatal("Did not get error message from caller")
 	}
+
+	// Register a procedure with progressive calls but no call canceling support
+	calleeSessNoCancel := newSession(callee, 0, calleeRolesNoCancel)
+	dealer.Register(calleeSessNoCancel, &wamp.Register{Request: 124, Procedure: testProcedure})
 }
 
 func TestCancelCallModeKillNoWait(t *testing.T) {
@@ -981,7 +1117,7 @@ func TestPatternBasedRegistration(t *testing.T) {
 	caller := newTestPeer()
 	callerSession := newSession(caller, 0, nil)
 
-	// Test calling valid procedure with full name.  Widlcard should match.
+	// Test calling valid procedure with full name.  Wildcard should match.
 	dealer.Call(callerSession,
 		&wamp.Call{Request: 125, Procedure: testProcedure})
 

@@ -14,13 +14,16 @@ import (
 )
 
 const (
-	testRealm       = wamp.URI("nexus.test.realm")
-	testRealm2      = wamp.URI("nexus.test.realm2")
-	testProcedure   = wamp.URI("nexus.test.endpoint")
-	testProcedureWC = wamp.URI("nexus..endpoint")
-	testTopic       = wamp.URI("nexus.test.event")
-	testTopicPfx    = wamp.URI("nexus.test")
-	testTopicWC     = wamp.URI("nexus..event")
+	testRealm         = wamp.URI("nexus.test.realm")
+	testRealm2        = wamp.URI("nexus.test.realm2")
+	testProcedure     = wamp.URI("nexus.test.endpoint")
+	testProcedureInv  = wamp.URI("nexus.in$valid.test.endpoint")
+	testProcedureWamp = wamp.URI("wamp.test.restricted")
+	testProcedureWC   = wamp.URI("nexus..endpoint")
+	testProcedureDC   = wamp.URI("foo.test.bar")
+	testTopic         = wamp.URI("nexus.test.event")
+	testTopicPfx      = wamp.URI("nexus.test")
+	testTopicWC       = wamp.URI("nexus..event")
 )
 
 var (
