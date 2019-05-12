@@ -331,13 +331,25 @@ func TestRemovePeer(t *testing.T) {
 // ----- WAMP v.2 Testing -----
 
 func TestPreProcessDecorator(t *testing.T) {
+
 	dealer, _ := newTestDealer()
 	callee := newTestPeer()
-	calleeSess := newSession(callee, 0, nil)
+	// not sure if needed, but added feature call_decoration
+	calleeRoles := wamp.Dict{
+		"roles": wamp.Dict{
+			"callee": wamp.Dict{
+				"features": wamp.Dict{
+					"call_decoration": true,
+				},
+			},
+		},
+	}
+	calleeSess := newSession(callee, 0, calleeRoles)
+
 	// Register target URI
 	dealer.Register(calleeSess, &wamp.Register{
 		Request:   123,
-		Procedure: "decoratortest.handlerURI",
+		Procedure: wamp.URI("decoratortest.handlerURI"),
 	})
 	rsp := <-callee.Recv()
 	_, ok := rsp.(*wamp.Registered)
@@ -345,17 +357,7 @@ func TestPreProcessDecorator(t *testing.T) {
 		t.Fatal("did not receive REGISTERED response")
 	}
 
-	dealer.Register(calleeSess, &wamp.Register{
-		Request:   124,
-		Procedure: testProcedureDC,
-	})
-	rsp = <-callee.Recv()
-	_, ok = rsp.(*wamp.Registered)
-	if !ok {
-		t.Fatal("did not receive REGISTERED response")
-	}
-
-	// Add Decorator
+	// Add decorator
 	dealer.Call(calleeSess, &wamp.Call{
 		Request:   124,
 		Procedure: wamp.MetaProcDecoratorAdd,
@@ -368,25 +370,14 @@ func TestPreProcessDecorator(t *testing.T) {
 			"sync",
 		},
 	})
-	//callee.Send(&wamp.Call{
-	//	Request:   124,
-	//	Procedure: wamp.MetaProcDecoratorAdd,
-	//	Arguments: wamp.List{
-	//		"preprocess",
-	//		"foo.test.bar",
-	//		"exact",
-	//		"decoratortest.handlerURI",
-	//		0,
-	//		"sync",
-	//	},
-	//})
 	rsp = <-callee.Recv()
-	errorMsg, _ := rsp.(*wamp.Error)
-	t.Fatal("FIXME: ", errorMsg)
+	if rsp.MessageType().String() == "ERROR" {
+		errMsg, _ := rsp.(*wamp.Error)
+		t.Fatal("FIXME: ", errMsg)
+	}
 
-	//caller := newTestPeer()
-	//callerSession := newSession(caller, 0, nil)
-	dealer.Call(calleeSess, &wamp.Call{Request: 125, Procedure: testProcedureDC})
+	// Call matchURI. Expected behaviour: should redirect to handlerURI
+	dealer.Call(calleeSess, &wamp.Call{Request: 125, Procedure: wamp.URI("foo.test.bar")})
 	rsp = <-callee.Recv()
 	_, ok = rsp.(*wamp.Invocation)
 	if !ok {
