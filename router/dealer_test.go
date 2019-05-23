@@ -377,6 +377,47 @@ func TestDecorators(t *testing.T) {
 	if !ok {
 		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
 	}
+
+	// Register precall matchURI
+	regID2 := wamp.GlobalID()
+	_ = callee.Send(&wamp.Register{
+		Request:   regID2,
+		Procedure: wamp.URI("foo.test.bar.precall"),
+	})
+	rsp = <-callee.Recv()
+	_, ok = rsp.(*wamp.Registered)
+	if !ok {
+		t.Fatal("did not receive REGISTERED response")
+	}
+
+	// Add precall decorator
+	callID3 := wamp.GlobalID()
+	_ = callee.Send(&wamp.Call{
+		Request:   callID3,
+		Procedure: wamp.MetaProcDecoratorAdd,
+		Arguments: wamp.List{
+			"precall",
+			"foo.test.bar.precall",
+			"exact",
+			"decoratortest.handlerURI",
+			0,
+			"sync",
+		},
+	})
+	rsp = <-callee.Recv()
+	_, ok = rsp.(*wamp.Result)
+	if !ok {
+		t.Fatal("expected RESULT response, got:", rsp.MessageType())
+	}
+
+	callID4 := wamp.GlobalID()
+	// Trigger precall decorator
+	_ = caller.Send(&wamp.Call{Request: callID4, Procedure: wamp.URI("foo.test.bar.precall")})
+	rsp = <-callee.Recv()
+	_, ok = rsp.(*wamp.Invocation)
+	if !ok {
+		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
+	}
 }
 
 func TestCancelCallModeKill(t *testing.T) {
