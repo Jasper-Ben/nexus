@@ -330,25 +330,16 @@ func TestRemovePeer(t *testing.T) {
 
 // ----- WAMP v.2 Testing -----
 
-func TestPreProcessDecorator(t *testing.T) {
+func TestDecorators(t *testing.T) {
 
-	dealer, _ := newTestDealer()
-	callee := newTestPeer()
-	// not sure if needed, but added feature call_decoration
-	calleeRoles := wamp.Dict{
-		"roles": wamp.Dict{
-			"callee": wamp.Dict{
-				"features": wamp.Dict{
-					"call_decoration": true,
-				},
-			},
-		},
-	}
-	calleeSess := newSession(callee, 0, calleeRoles)
+	// This has to be a router, since dealer does not know about the meta API
+	router, _ := newTestRouter()
+	callee, _ := testClient(router)
 
 	// Register target URI
-	dealer.Register(calleeSess, &wamp.Register{
-		Request:   123,
+	regID := wamp.GlobalID()
+	_ = callee.Send(&wamp.Register{
+		Request:   regID,
 		Procedure: wamp.URI("decoratortest.handlerURI"),
 	})
 	rsp := <-callee.Recv()
@@ -357,9 +348,10 @@ func TestPreProcessDecorator(t *testing.T) {
 		t.Fatal("did not receive REGISTERED response")
 	}
 
-	// Add decorator
-	dealer.Call(calleeSess, &wamp.Call{
-		Request:   124,
+	// Add preprocess decorator
+	callID := wamp.GlobalID()
+	_ = callee.Send(&wamp.Call{
+		Request:   callID,
 		Procedure: wamp.MetaProcDecoratorAdd,
 		Arguments: wamp.List{
 			"preprocess",
@@ -371,13 +363,15 @@ func TestPreProcessDecorator(t *testing.T) {
 		},
 	})
 	rsp = <-callee.Recv()
-	if rsp.MessageType().String() == "ERROR" {
-		errMsg, _ := rsp.(*wamp.Error)
-		t.Fatal("FIXME: ", errMsg)
+	_, ok = rsp.(*wamp.Result)
+	if !ok {
+		t.Fatal("expected RESULT response, got:", rsp.MessageType())
 	}
 
-	// Call matchURI. Expected behaviour: should redirect to handlerURI
-	dealer.Call(calleeSess, &wamp.Call{Request: 125, Procedure: wamp.URI("foo.test.bar")})
+	caller, _ := testClient(router)
+	callID2 := wamp.GlobalID()
+	// Trigger preprocess decorator
+	_ = caller.Send(&wamp.Call{Request: callID2, Procedure: wamp.URI("foo.test.bar")})
 	rsp = <-callee.Recv()
 	_, ok = rsp.(*wamp.Invocation)
 	if !ok {
@@ -438,7 +432,7 @@ func TestCancelCallModeKill(t *testing.T) {
 		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
 	}
 
-	// Test caller cancelling call. mode=invalid
+	// Test caller cancelling call. This mode does not exist and the call is invalid
 	opts := wamp.SetOption(nil, "mode", "killnow")
 	dealer.Cancel(callerSession, &wamp.Cancel{Request: 125, Options: opts})
 	rsp = <-caller.Recv()
