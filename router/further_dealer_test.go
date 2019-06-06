@@ -4,6 +4,7 @@ package router_test
 
 import (
 	"context"
+	"encoding/json"
 	_ "errors"
 	_ "fmt"
 	"testing"
@@ -71,8 +72,7 @@ func newTestClient(r router.Router) (*client.Client, error) {
 
 // --- Decorator Testing ---
 
-func TestBasicPreProcessDecorator(t *testing.T) {
-
+func TestPreProcessDecorator(t *testing.T) {
 	// This has to be a router, since a dealer would
 	// not know about the meta API
 	router, _ := newTestRouter()
@@ -83,399 +83,255 @@ func TestBasicPreProcessDecorator(t *testing.T) {
 	ctx := context.Background()
 	done := make(chan bool, 1)
 
-	handlerFail := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
-		t.Fatal("Error: unexpected RI! Call not modified.")
-		return &client.InvokeResult{}
-	}
-	handlerSuccess := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
-		done <- true
+	// test pre-process decorator with error return.
+	handlerFooBar := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		t.Fatal("Error: unexpected URI, should return Error!")
 		return &client.InvokeResult{}
 	}
 
 	decoratorHandler := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
-		returnCall := &wamp.Call{
-			Request:     args[0].(*wamp.Call).Request,
-			Options:     wamp.Dict{},
-			Procedure:   wamp.URI("test.rewrite.URI"),
+		returnErr := &wamp.Error{
+			Type:        48,
+			Request:     wamp.GlobalID(),
+			Details:     wamp.Dict{},
+			Error:       wamp.URI("wamp.ErrCanceled"),
 			Arguments:   wamp.List{},
 			ArgumentsKw: wamp.Dict{},
 		}
 		t.Log("running decoratorHandler")
 		return &client.InvokeResult{
-			Args: wamp.List{returnCall},
+			// handler returns an ERROR message: it should be sent to the caller.
+			Args: wamp.List{returnErr},
 		}
 	}
-	// Register old target URI
-	if err := callee.Register("foo.test.bar", handlerFail, nil); err != nil {
-		t.Fatalf("failed to register procedure: %v\n", err)
-	}
-
-	// Register target URI
-	if err := callee.Register("test.rewrite.URI", handlerSuccess, nil); err != nil {
+	// Register target URI (never used, since ERROR)
+	if err := callee.Register("foo.test.bar.error", handlerFooBar, nil); err != nil {
 		t.Fatalf("failed to register procedure: %v\n", err)
 	}
 
 	// Register handler URI
-	if err := callee.Register("decoratortest.handlerURI", decoratorHandler, nil); err != nil {
+	if err := callee.Register("decoratortest.handlerURI.error", decoratorHandler, nil); err != nil {
 		t.Fatalf("failed to register procedure: %v\n", err)
 	}
 
 	// Add preprocess decorator
 	args := wamp.List{
 		"preprocess",
-		"foo.test.bar",
+		"foo.test.bar.error",
 		"exact",
-		"decoratortest.handlerURI",
+		"decoratortest.handlerURI.error",
 		0,
 		"sync"}
-
 	if _, err := callee.Call(ctx, "wamp.decorator.add", nil, args, nil, ""); err != nil {
 		t.Fatalf("Error calling wamp.decorator.add: %v\n", err)
 	}
 
 	// Trigger preprocess decorator
-	_, err := caller.Call(ctx, "foo.test.bar", nil, nil, nil, "")
+	rsp, _ := caller.Call(ctx, "foo.test.bar.error", nil, nil, nil, "")
+	rspp, _ := json.MarshalIndent(rsp, "", "  ")
+	t.Logf("rsp is: %s\n", rspp)
+	if rsp.MessageType().String() != "ERROR" {
+		// FIXME: this should return an error message to the caller. Instead it returns an error message nested into a response message.
+		t.Errorf("Expected Messagetype ERROR, got %s\n", rsp.MessageType())
+	}
+
+	// test proprocess decorator: return nothing
+	handlerFooBar = func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		done <- true
+		return &client.InvokeResult{}
+	}
+
+	handlerFail := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		t.Fatal("Error: unexpected URI, should NOT return modified URI!")
+		return &client.InvokeResult{}
+	}
+
+	decoratorHandler = func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		t.Log("running decoratorHandler")
+		// returning nothing: the call should be processed as usual
+		return &client.InvokeResult{}
+		// return nil
+	}
+	// Register old target URI
+	if err := callee.Register("foo.test.bar.nothing", handlerFooBar, nil); err != nil {
+		t.Fatalf("failed to register procedure: %v\n", err)
+	}
+
+	// Register target URI
+	if err := callee.Register("test.rewrite.URI.nothing", handlerFail, nil); err != nil {
+		t.Fatalf("failed to register procedure: %v\n", err)
+	}
+
+	// Register handler URI
+	if err := callee.Register("decoratortest.handlerURI.nothing", decoratorHandler, nil); err != nil {
+		t.Fatalf("failed to register procedure: %v\n", err)
+	}
+
+	// Add preprocess decorator
+	args = wamp.List{
+		"preprocess",
+		"foo.test.bar.nothing",
+		"exact",
+		"decoratortest.handlerURI.nothing",
+		0,
+		"sync"}
+	if _, err := callee.Call(ctx, "wamp.decorator.add", nil, args, nil, ""); err != nil {
+		t.Fatalf("Error calling wamp.decorator.add: %v\n", err)
+	}
+
+	// Trigger preprocess decorator
+	rsp, err := caller.Call(ctx, "foo.test.bar.nothing", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("Error calling preprocess decorator: %v\n", err)
 	}
-
+	rspp, _ = json.MarshalIndent(rsp, "", "  ")
+	t.Logf("rsp is: %s\n", rspp)
 	go func() {
 		time.Sleep(5 * time.Second)
 		done <- false
 	}()
 	if !<-done {
-		// TODO: fixme
-		t.Fatalf("Call not redirected after 5 seconds!")
+		// FIXME: This should redirect the Call to the target URI "test.rewrite.URI". Instead it returns the new call to the caller, again as a nested call.
+		t.Error("Preprocess Decorator: HandlerFooBar not called after 5 seconds!")
+	}
+	done <- false
+
+	handlerFooBar = func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		t.Fatal("Error: unexpected URI, should return modified URI!")
+		return &client.InvokeResult{}
+	}
+
+	handlerSuccess := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		done <- true
+		return &client.InvokeResult{}
+	}
+
+	decoratorHandler = func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		returnCall := &wamp.Call{
+			Request:     args[0].(*wamp.Call).Request,
+			Options:     wamp.Dict{},
+			Procedure:   wamp.URI("foo.rewrite.bar"),
+			Arguments:   wamp.List{},
+			ArgumentsKw: wamp.Dict{},
+		}
+		t.Log("running decoratorHandler")
+		return &client.InvokeResult{
+			// pre-process handler returns a new CALL message: it should be used instead of the original CALL message
+			Args: wamp.List{returnCall},
+		}
+	}
+	// Register old target URI
+	if err := callee.Register("foo.test.bar.rewrite", handlerFooBar, nil); err != nil {
+		t.Fatalf("failed to register procedure: %v\n", err)
+	}
+
+	// Register target URI
+	if err := callee.Register("foo.rewrite.bar", handlerSuccess, nil); err != nil {
+		t.Fatalf("failed to register procedure: %v\n", err)
+	}
+
+	// Register handler URI
+	if err := callee.Register("decoratortest.handlerURI.rewrite", decoratorHandler, nil); err != nil {
+		t.Fatalf("failed to register procedure: %v\n", err)
+	}
+
+	// Add preprocess decorator
+	args = wamp.List{
+		"preprocess",
+		"foo.test.bar.rewrite",
+		"exact",
+		"decoratortest.handlerURI.rewrite",
+		0,
+		"sync"}
+	if _, err := callee.Call(ctx, "wamp.decorator.add", nil, args, nil, ""); err != nil {
+		t.Fatalf("Error calling wamp.decorator.add: %v\n", err)
+	}
+
+	// Trigger preprocess decorator
+	rsp, err = caller.Call(ctx, "foo.test.bar.rewrite", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("Error calling preprocess decorator: %v\n", err)
+	}
+	rspp, _ = json.MarshalIndent(rsp, "", "  ")
+	t.Logf("rsp is: %s\n", rspp)
+	go func() {
+		time.Sleep(5 * time.Second)
+		done <- false
+	}()
+	if !<-done {
+		// FIXME: This should redirect the Call to the target URI "test.rewrite.URI". Instead it returns the new call to the caller, again as a nested call.
+		t.Error("Preprocess Decorator: Call not redirected after 5 seconds!")
 	}
 }
 
-//func TestBasicPrecallDecorator(t *testing.T) {
+//func TestPrecallDecorator(t *testing.T) {
 //
 //	// This has to be a router, since a dealer would
 //	// not know about the meta API
 //	router, _ := newTestRouter()
-//	// These have to be a full-fledged testClient
+//	// These have to be a full-fledged testClients,
 //	// as we need to modify return values for extended testing
 //	callee, _ := newTestClient(router)
 //	caller, _ := newTestClient(router)
+//	ctx := context.Background()
+//	done := make(chan bool, 1)
 //
-//	// Register target URI
-//	_ = callee.Send(&wamp.Register{
-//		Request:   123,
-//		Procedure: wamp.URI("decoratortest.handlerURI"),
-//	})
-//	rsp := <-callee.Recv()
-//	_, ok := rsp.(*wamp.Registered)
-//	if !ok {
-//		t.Fatal("did not receive REGISTERED response")
+//	handlerFooBar := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+//		done <- true
+//		return &client.InvokeResult{
+//			//Args: wamp.List{details["Test"]},
+//		}
 //	}
 //
-//	// Register precall matchURI
-//	_ = callee.Send(&wamp.Register{
-//		Request:   127,
-//		Procedure: wamp.URI("foo.test.bar.precall"),
-//	})
-//	rsp = <-callee.Recv()
-//	_, ok = rsp.(*wamp.Registered)
-//	if !ok {
-//		t.Fatal("did not receive REGISTERED response")
+//	decoratorHandler := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+//		//		returnInv := &wamp.Invocation{
+//		//			Request:      args[0].(*wamp.Call).Request,
+//		//			Registration: 123,
+//		//			Details:      wamp.Dict{},
+//		//			Arguments:    wamp.List{},
+//		//			ArgumentsKw:  wamp.Dict{},
+//		//		}
+//		t.Log("running decoratorHandler")
+//		return &client.InvokeResult{
+//			// pre-call handler returns a new Invocation message: it should be used instead of the original Invocation message
+//			//Args: wamp.List{returnInv},
+//		}
+//	}
+//	// Register target URI
+//	if err := callee.Register("foo.test.bar", handlerFooBar, nil); err != nil {
+//		t.Fatalf("failed to register procedure: %v\n", err)
+//	}
+//
+//	// Register handler URI
+//	if err := callee.Register("decoratortest.handlerURI", decoratorHandler, nil); err != nil {
+//		t.Fatalf("failed to register procedure: %v\n", err)
 //	}
 //
 //	// Add precall decorator
-//	_ = callee.Send(&wamp.Call{
-//		Request:   128,
-//		Procedure: wamp.MetaProcDecoratorAdd,
-//		Arguments: wamp.List{
-//			"precall",
-//			"foo.test.bar.precall",
-//			"exact",
-//			"decoratortest.handlerURI",
-//			0,
-//			"sync",
-//		},
-//	})
-//	rsp = <-callee.Recv()
-//	_, ok = rsp.(*wamp.Result)
-//	if !ok {
-//		t.Fatal("expected RESULT response, got:", rsp.MessageType())
+//	args := wamp.List{
+//		"precall",
+//		"foo.test.bar",
+//		"exact",
+//		"decoratortest.handlerURI",
+//		0,
+//		"sync"}
+//	if _, err := callee.Call(ctx, "wamp.decorator.add", nil, args, nil, ""); err != nil {
+//		t.Fatalf("Error calling wamp.decorator.add: %v\n", err)
 //	}
 //
 //	// Trigger precall decorator
-//	// as the precall handler returns nothing,
-//	// the call will be processed as usual.
-//	_ = caller.Send(&wamp.Call{Request: 129, Procedure: wamp.URI("foo.test.bar.precall")})
-//	rsp = <-callee.Recv()
-//	_, ok = rsp.(*wamp.Invocation)
-//	if !ok {
-//		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
+//	rsp, err := caller.Call(ctx, "foo.test.bar", nil, nil, nil, "")
+//	if err != nil {
+//		t.Fatalf("Error calling precall decorator: %v\n", err)
+//	}
+//	rspp, _ := json.MarshalIndent(rsp, "", "  ")
+//	t.Logf("rsp is: %s\n", rspp)
+//	go func() {
+//		time.Sleep(5 * time.Second)
+//		done <- false
+//	}()
+//	if !<-done {
+//		// FIXME: This should use the new Invocation message. Instead it returns the new Invocation message to the caller, again as a nested call. The target URI is never called
+//		t.Error("Precall Decorator: Target URI not called!")
 //	}
 //}
-
-//func TestBasicPublishDecorator(t *testing.T) {
-//	router, _ := newTestRouter()
-//	subscriber, _ := testClient(router)
-//	testTopic := wamp.URI("nexus.test.topic")
-//
-//	_ = subscriber.Send(&wamp.Register{
-//		Request:   123,
-//		Procedure: wamp.URI("decoratortest.handlerURI"),
-//	})
-//	rsp := <-subscriber.Recv()
-//	_, ok := rsp.(*wamp.Registered)
-//	if !ok {
-//		t.Fatal("did not receive REGISTERED response")
-//	}
-//
-//	subscriber.Send(&wamp.Subscribe{Request: 123, Topic: testTopic})
-//	rsp = <-subscriber.Recv()
-//	_, ok = rsp.(*wamp.Subscribed)
-//	if !ok {
-//		t.Fatal("expected SUBSCRIBED response, got:", rsp.MessageType())
-//	}
-//
-//	_ = subscriber.Send(&wamp.Call{
-//		Request:   124,
-//		Procedure: wamp.MetaProcDecoratorAdd,
-//		Arguments: wamp.List{
-//			"publish",
-//			"nexus.test.topic",
-//			"exact",
-//			"decoratortest.handlerURI",
-//			0,
-//			"sync",
-//		},
-//	})
-//	rsp = <-subscriber.Recv()
-//	_, ok = rsp.(*wamp.Result)
-//	if !ok {
-//		t.Fatal("expected RESULT response, got:", rsp.MessageType())
-//	}
-//
-//}
-//
-//// ---
-//
-//func TestCancelCallModeKill(t *testing.T) {
-//	dealer, metaClient := newTestDealer()
-//
-//	calleeRoles := wamp.Dict{
-//		"roles": wamp.Dict{
-//			"callee": wamp.Dict{
-//				"features": wamp.Dict{
-//					"call_canceling": true,
-//				},
-//			},
-//		},
-//	}
-//
-//	calleeRolesNoCancel := wamp.Dict{
-//		"roles": wamp.Dict{
-//			"callee": wamp.Dict{
-//				"features": wamp.Dict{
-//					"progressive_call_results": true,
-//					"call_canceling":           false,
-//				},
-//			},
-//		},
-//	}
-//
-//	// Register a procedure.
-//	callee := newTestPeer()
-//	calleeSess := newSession(callee, 0, calleeRoles)
-//	dealer.Register(calleeSess,
-//		&wamp.Register{Request: 123, Procedure: testProcedure})
-//	rsp := <-callee.Recv()
-//	_, ok := rsp.(*wamp.Registered)
-//	if !ok {
-//		t.Fatal("did not receive REGISTERED response")
-//	}
-//
-//	if err := checkMetaReg(metaClient, calleeSess.ID); err != nil {
-//		t.Fatal("Registration meta event fail:", err)
-//	}
-//
-//	caller := newTestPeer()
-//	callerSession := newSession(caller, 0, nil)
-//
-//	// Test calling valid procedure
-//	dealer.Call(callerSession,
-//		&wamp.Call{Request: 125, Procedure: testProcedure})
-//
-//	// Test that callee received an INVOCATION message.
-//	rsp = <-callee.Recv()
-//	inv, ok := rsp.(*wamp.Invocation)
-//	if !ok {
-//		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
-//	}
-//
-//	// Test caller cancelling call. This mode does not exist and the call is invalid
-//	opts := wamp.SetOption(nil, "mode", "killnow")
-//	dealer.Cancel(callerSession, &wamp.Cancel{Request: 125, Options: opts})
-//	rsp = <-caller.Recv()
-//	errMsg := rsp.(*wamp.Error)
-//	if errMsg.Error != wamp.ErrInvalidArgument {
-//		t.Error("expected error:", wamp.ErrInvalidArgument)
-//	}
-//
-//	// Test caller cancelling call. mode=kill
-//	opts = wamp.SetOption(nil, "mode", "kill")
-//	dealer.Cancel(callerSession, &wamp.Cancel{Request: 125, Options: opts})
-//
-//	// callee should receive an INTERRUPT request
-//	rsp = <-callee.Recv()
-//	interrupt, ok := rsp.(*wamp.Interrupt)
-//	if !ok {
-//		t.Fatal("callee expected INTERRUPT, got:", rsp.MessageType())
-//	}
-//	if interrupt.Request != inv.Request {
-//		t.Fatal("INTERRUPT request ID does not match INVOCATION request ID")
-//	}
-//
-//	// callee responds with ERROR message
-//	dealer.Error(calleeSess, &wamp.Error{
-//		Type:    wamp.INVOCATION,
-//		Request: inv.Request,
-//		Error:   wamp.ErrCanceled,
-//		Details: wamp.Dict{"reason": "callee canceled"},
-//	})
-//
-//	// Check that caller receives the ERROR message.
-//	rsp = <-caller.Recv()
-//	rslt, ok := rsp.(*wamp.Error)
-//	if !ok {
-//		t.Fatal("expected ERROR, got:", rsp.MessageType())
-//	}
-//	if rslt.Error != wamp.ErrCanceled {
-//		t.Fatal("wrong error, want", wamp.ErrCanceled, "got", rslt.Error)
-//	}
-//	if len(rslt.Details) == 0 {
-//		t.Fatal("expected details in message")
-//	}
-//	if s, _ := wamp.AsString(rslt.Details["reason"]); s != "callee canceled" {
-//		t.Fatal("Did not get error message from caller")
-//	}
-//
-//	// Register a procedure with progressive calls but no call canceling support
-//	calleeSessNoCancel := newSession(callee, 0, calleeRolesNoCancel)
-//	dealer.Register(calleeSessNoCancel, &wamp.Register{Request: 124, Procedure: testProcedure})
-//}
-//
-//func TestCancelCallModeKillNoWait(t *testing.T) {
-//	dealer, metaClient := newTestDealer()
-//
-//	calleeRoles := wamp.Dict{
-//		"roles": wamp.Dict{
-//			"callee": wamp.Dict{
-//				"features": wamp.Dict{
-//					"call_canceling": true,
-//				},
-//			},
-//		},
-//	}
-//
-//	// Register a procedure.
-//	callee := newTestPeer()
-//	calleeSess := newSession(callee, 0, calleeRoles)
-//	dealer.Register(calleeSess,
-//		&wamp.Register{Request: 123, Procedure: testProcedure})
-//	rsp := <-callee.Recv()
-//	_, ok := rsp.(*wamp.Registered)
-//	if !ok {
-//		t.Fatal("did not receive REGISTERED response")
-//	}
-//
-//	if err := checkMetaReg(metaClient, calleeSess.ID); err != nil {
-//		t.Fatal("Registration meta event fail:", err)
-//	}
-//
-//	caller := newTestPeer()
-//	callerSession := newSession(caller, 0, nil)
-//
-//	// Test calling valid procedure
-//	dealer.Call(callerSession,
-//		&wamp.Call{Request: 125, Procedure: testProcedure})
-//
-//	// Test that callee received an INVOCATION message.
-//	rsp = <-callee.Recv()
-//	inv, ok := rsp.(*wamp.Invocation)
-//	if !ok {
-//		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
-//	}
-//
-//	// Test caller cancelling call. mode=kill
-//	opts := wamp.SetOption(nil, "mode", "killnowait")
-//	dealer.Cancel(callerSession, &wamp.Cancel{Request: 125, Options: opts})
-//
-//	// callee should receive an INTERRUPT request
-//	rsp = <-callee.Recv()
-//	interrupt, ok := rsp.(*wamp.Interrupt)
-//	if !ok {
-//		t.Fatal("callee expected INTERRUPT, got:", rsp.MessageType())
-//	}
-//	if interrupt.Request != inv.Request {
-//		t.Fatal("INTERRUPT request ID does not match INVOCATION request ID")
-//	}
-//
-//	// callee responds with ERROR message
-//	dealer.Error(calleeSess, &wamp.Error{
-//		Type:    wamp.INVOCATION,
-//		Request: inv.Request,
-//		Error:   wamp.ErrCanceled,
-//		Details: wamp.Dict{"reason": "callee canceled"},
-//	})
-//
-//	// Check that caller receives the ERROR message.
-//	rsp = <-caller.Recv()
-//	rslt, ok := rsp.(*wamp.Error)
-//	if !ok {
-//		t.Fatal("expected ERROR, got:", rsp.MessageType())
-//	}
-//	if rslt.Error != wamp.ErrCanceled {
-//		t.Fatal("wrong error, want", wamp.ErrCanceled, "got", rslt.Error)
-//	}
-//	if len(rslt.Details) != 0 {
-//		t.Fatal("should not have details; result should not be from callee")
-//	}
-//}
-//
-//func TestCancelCallModeSkip(t *testing.T) {
-//	dealer, metaClient := newTestDealer()
-//
-//	// Register a procedure.
-//	callee := newTestPeer()
-//	calleeRoles := wamp.Dict{
-//		"roles": wamp.Dict{
-//			"callee": wamp.Dict{
-//				"features": wamp.Dict{
-//					"call_canceling": true,
-//				},
-//			},
-//		},
-//	}
-//
-//	calleeSess := newSession(callee, 0, calleeRoles)
-//	dealer.Register(calleeSess,
-//		&wamp.Register{Request: 123, Procedure: testProcedure})
-//	rsp := <-callee.Recv()
-//	_, ok := rsp.(*wamp.Registered)
-//	if !ok {
-//		t.Fatal("did not receive REGISTERED response")
-//	}
-//
-//	if err := checkMetaReg(metaClient, calleeSess.ID); err != nil {
-//		t.Fatal("Registration meta event fail:", err)
-//	}
-//
-//	caller := newTestPeer()
-//	callerSession := newSession(caller, 0, nil)
-//
-//	// Test calling valid procedure
-//	dealer.Call(callerSession,
-//		&wamp.Call{Request: 125, Procedure: testProcedure})
-//
-//	// Test that callee received an INVOCATION message.
-//	rsp = <-callee.Recv()
-//	_, ok = rsp.(*wamp.Invocation)
-//	if !ok {
-//		t.Fatal("expected INVOCATION, got:", rsp.MessageType())
-//	}
