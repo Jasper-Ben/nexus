@@ -152,9 +152,9 @@ func assignSlice(dst reflect.Value, src reflect.Value) error {
 	return nil
 }
 
-// msgToList converts a message to a list of interface{}. Trailing empty values
+// WampMessageToList converts a message to a list of interface{}. Trailing empty values
 // are not appended to the list.
-func msgToList(msg wamp.Message) []interface{} {
+func WampMessageToList(msg wamp.Message) []interface{} {
 	val := reflect.ValueOf(msg)
 	if val.Kind() == reflect.Ptr {
 		val = val.Elem()

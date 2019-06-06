@@ -23,7 +23,7 @@ type JSONSerializer struct{}
 // Serialize encodes a Message into a json payload.
 func (s *JSONSerializer) Serialize(msg wamp.Message) ([]byte, error) {
 	var b []byte
-	return b, codec.NewEncoderBytes(&b, jh).Encode(msgToList(msg))
+	return b, codec.NewEncoderBytes(&b, jh).Encode(WampMessageToList(msg))
 }
 
 // Deserialize decodes a json payload into a Message.

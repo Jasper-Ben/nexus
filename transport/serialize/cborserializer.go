@@ -22,7 +22,7 @@ type CBORSerializer struct{}
 // Serialize encodes a Message into a cbor payload.
 func (s *CBORSerializer) Serialize(msg wamp.Message) ([]byte, error) {
 	var b []byte
-	return b, codec.NewEncoderBytes(&b, ch).Encode(msgToList(msg))
+	return b, codec.NewEncoderBytes(&b, ch).Encode(WampMessageToList(msg))
 }
 
 // Deserialize decodes a cbor payload into a Message.

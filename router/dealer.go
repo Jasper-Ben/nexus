@@ -814,13 +814,15 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			Arguments:   wamp.List{callObj.currentCallMessage},
 			ArgumentsKw: wamp.Dict{},
 		}, callObj.preProcessDecorators[0].handlerURI, true, isSync); err != nil {
+			// Calling the preprocess decorator failed, so return the error to the original caller.
 			delete(d.invocations, uniqueID)
 			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
 			d.trySend(callObj.caller, err)
 		} else {
+			// Remove the processed decorator from the list.
 			callObj.preProcessDecorators = callObj.preProcessDecorators[1:]
 			if len(callObj.preProcessDecorators) == 0 {
-				callObj.currentState = callStateProcessing
+				// we have no more decorators, move on to the processing state
 				if !isSync {
 					// chain is empty, no more synchronous results to come, so move on to the processing
 					break
@@ -832,6 +834,20 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			return
 		}
 	}
+
+	if callObj.currentState == callStatePreprocessDecorators {
+		// Arriving here means that we **were** in the preprocessing state
+		// and don't expect any further results.
+		// This can happen either if:
+		// - the result from the last **synchronous** decorator arrived
+		// - the last processed decorator was **async**.
+		callObj.currentState = callStateProcessing
+	}
+
+	// This step performs the internal call processing and looks up the
+	// preCall decorators.
+	// We need to defer this step because the preprocess decorator might change the actual endpoint
+	// the caller will invoke.
 	if callObj.currentState == callStateProcessing {
 		targetCallee, invocationMessage, errorMessage := d.buildInvocation(callObj, &wamp.Call{
 			Request:     callObj.callerRequestID,
@@ -841,21 +857,32 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			Procedure:   callObj.currentCallMessage.Procedure,
 		}, callObj.currentCallMessage.Procedure, false, true)
 		if errorMessage != nil {
+			// Arriving here means that the endpoint couldn't be found another error happened.
+			// Therefore, skip further processing and return the error to the caller in a
+			// best-effort manner.
 			delete(d.invocations, uniqueID)
 			delete(d.invocationByCall, requestID{session: callObj.caller.ID, request: callObj.callerRequestID})
 			d.trySend(callObj.caller, errorMessage)
 			return
 		}
+
+		// Store the invocation message which will be sent to the callee within the call object
+		// and match preCall and postCall decorators to ensure consistency
+		// during long-running calls.
 		callObj.currentInvocationMessage = invocationMessage
 		callObj.targetCallee = targetCallee
 		callObj.preCallDecorators = d.precallDecorators.matchDecorators(callObj.currentCallMessage.Procedure)
 		callObj.postCallDecorators = d.postcallDecorators.matchDecorators(callObj.currentCallMessage.Procedure)
 		if len(callObj.preCallDecorators) > 0 {
+			// We need to run decorators before sending the call to the callee
 			callObj.currentState = callStatePrecallDecorators
 		} else {
+			// We can directly move on to sending the call to the callee
 			callObj.currentState = callStateResult
 		}
 	}
+
+	// PreCall processing required
 	for callObj.currentState == callStatePrecallDecorators && len(callObj.preCallDecorators) > 0 {
 		isSync := callObj.preCallDecorators[0].callType == wamp.DecoratorCallTypeSync
 		if err := d.callInt(callObj, &wamp.Call{
@@ -871,7 +898,6 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 		} else {
 			callObj.preCallDecorators = callObj.preCallDecorators[1:]
 			if len(callObj.preCallDecorators) == 0 {
-				callObj.currentState = callStateResult
 				if !isSync {
 					// chain is empty, no more synchronous results to come, so move on to the processing
 					break
@@ -882,6 +908,15 @@ func (d *Dealer) call(caller *session, msg *wamp.Call, uniqueID wamp.ID) {
 			// await the first synchronous result and then move on.
 			return
 		}
+	}
+
+	if callObj.currentState == callStatePrecallDecorators {
+		// Arriving here means that we **were** in the precall state
+		// and don't expect any further results.
+		// This can happen either if:
+		// - the result from the last **synchronous** decorator arrived
+		// - the last processed decorator was **async**.
+		callObj.currentState = callStateResult
 	}
 
 	// If we get here, it means that for the call request,
@@ -1053,7 +1088,12 @@ func (d *Dealer) yield(callee *session, msg *wamp.Yield) {
 		callObj.currentCallee = nil
 		decoratedInvocation := getMessage(msg.Arguments, wamp.INVOCATION)
 		if decoratedInvocation != nil {
+			// Ensure the requestID can't be changed anymore
+			request := callObj.currentInvocationMessage.Request
+			registration := callObj.currentInvocationMessage.Registration
 			callObj.currentInvocationMessage = decoratedInvocation.(*wamp.Invocation)
+			callObj.currentInvocationMessage.Request = request
+			callObj.currentInvocationMessage.Registration = registration
 		}
 		d.call(callObj.caller, callObj.currentCallMessage, callObj.callID)
 		return
