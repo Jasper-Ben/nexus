@@ -261,74 +261,61 @@ func TestPreProcessDecoratorRedirectResult(t *testing.T) {
 	}
 }
 
-//func TestPrecallDecorator(t *testing.T) {
-//
-//	// This has to be a router, since a dealer would
-//	// not know about the meta API
-//	router, _ := newTestRouter()
-//	// These have to be a full-fledged testClients,
-//	// as we need to modify return values for extended testing
-//	callee, _ := newTestClient(router)
-//	caller, _ := newTestClient(router)
-//	ctx := context.Background()
-//	done := make(chan bool, 1)
-//
-//	handlerFooBar := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
-//		done <- true
-//		return &client.InvokeResult{
-//			//Args: wamp.List{details["Test"]},
-//		}
-//	}
-//
-//	decoratorHandler := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
-//		//		returnInv := &wamp.Invocation{
-//		//			Request:      args[0].(*wamp.Call).Request,
-//		//			Registration: 123,
-//		//			Details:      wamp.Dict{},
-//		//			Arguments:    wamp.List{},
-//		//			ArgumentsKw:  wamp.Dict{},
-//		//		}
-//		t.Log("running decoratorHandler")
-//		return &client.InvokeResult{
-//			// pre-call handler returns a new Invocation message: it should be used instead of the original Invocation message
-//			//Args: wamp.List{returnInv},
-//		}
-//	}
-//	// Register target URI
-//	if err := callee.Register("foo.test.bar", handlerFooBar, nil); err != nil {
-//		t.Fatalf("failed to register procedure: %v\n", err)
-//	}
-//
-//	// Register handler URI
-//	if err := callee.Register("decoratortest.handlerURI", decoratorHandler, nil); err != nil {
-//		t.Fatalf("failed to register procedure: %v\n", err)
-//	}
-//
-//	// Add precall decorator
-//	args := wamp.List{
-//		"precall",
-//		"foo.test.bar",
-//		"exact",
-//		"decoratortest.handlerURI",
-//		0,
-//		"sync"}
-//	if _, err := callee.Call(ctx, "wamp.decorator.add", nil, args, nil, ""); err != nil {
-//		t.Fatalf("Error calling wamp.decorator.add: %v\n", err)
-//	}
-//
-//	// Trigger precall decorator
-//	rsp, err := caller.Call(ctx, "foo.test.bar", nil, nil, nil, "")
-//	if err != nil {
-//		t.Fatalf("Error calling precall decorator: %v\n", err)
-//	}
-//	rspp, _ := json.MarshalIndent(rsp, "", "  ")
-//	t.Logf("rsp is: %s\n", rspp)
-//	go func() {
-//		time.Sleep(5 * time.Second)
-//		done <- false
-//	}()
-//	if !<-done {
-//		// FIXME: This should use the new Invocation message. Instead it returns the new Invocation message to the caller, again as a nested call. The target URI is never called
-//		t.Error("Precall Decorator: Target URI not called!")
-//	}
-//}
+func TestPreProcessDecoratorAsync(t *testing.T) {
+	router, _ := newTestRouter()
+	callee, _ := newTestClient(router)
+	decoratee, _ := newTestClient(router)
+	caller, _ := newTestClient(router)
+	ctx := context.Background()
+	done := make(chan bool, 1)
+
+	// test proprocess decorator: return nothing
+	handlerFooBar := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		done <- true
+		return &client.InvokeResult{}
+	}
+
+	decoratorHandler := func(ctx context.Context, args wamp.List, kwargs, details wamp.Dict) *client.InvokeResult {
+		t.Log("Running decoratorHandler")
+		// returning nothing: the call should be processed as usual
+		return &client.InvokeResult{}
+		// return nil
+	}
+
+	// Register old target URI
+	if err := callee.Register("foo.test.bar.nothing", handlerFooBar, nil); err != nil {
+		t.Fatalf("failed to register procedure: %v\n", err)
+	}
+
+	// Register handler URI
+	if err := decoratee.Register("decoratortest.handlerURI.nothing", decoratorHandler, nil); err != nil {
+		t.Fatalf("failed to register procedure: %v\n", err)
+	}
+
+	// Add preprocess decorator
+	args := wamp.List{
+		"preprocess",
+		"foo.test.bar.nothing",
+		"exact",
+		"decoratortest.handlerURI.nothing",
+		0,
+		"async"}
+	if _, err := decoratee.Call(ctx, "wamp.decorator.add", nil, args, nil, ""); err != nil {
+		t.Fatalf("Error calling wamp.decorator.add: %v\n", err)
+	}
+
+	// Trigger preprocess decorator
+	rsp, err := caller.Call(ctx, "foo.test.bar.nothing", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("Error calling preprocess decorator: %v\n", err)
+	}
+	rspp, _ := json.MarshalIndent(rsp, "", "  ")
+	t.Logf("rsp is: %s\n", rspp)
+	go func() {
+		time.Sleep(5 * time.Second)
+		done <- false
+	}()
+	if !<-done {
+		t.Error("Preprocess Decorator: HandlerFooBar not called after 5 seconds!")
+	}
+}

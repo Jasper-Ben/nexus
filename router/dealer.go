@@ -755,7 +755,8 @@ func (d *Dealer) callInt(callObj *call, msg *wamp.Call, procedure wamp.URI, isDe
 		callObj.currentCallee = callee
 	} else {
 		callObj := &call{
-			dropResult: true,
+			dropResult:    true,
+			currentCallee: callee,
 		}
 		d.invocations[invocation.Request] = callObj
 	}
